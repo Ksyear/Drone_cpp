@@ -159,17 +159,17 @@ Content-Type: application/json
 |---|---|---|
 | 링크 | BLE 서비스 FFE0 / 특성 FFE1 (쓰기·알림), 투명 UART 115200 | 현 모듈 GATT 실측 로그 미확보 |
 | 프레임 | MSP `$M<` + 길이 + 명령 + payload + XOR(길이·명령·payload) | 펌웨어 소스 기준 |
-| 이동 출력 | **새 GOTO 명령을 만들지 않는다.** 외부 위치 루프가 MSP **150**(롤·피치·요·스로틀·AUX 각 1바이트)을 보낸다. `rcData = 1000 + 4×byte`, 중립 125 | 허브가 `rcPreview`로 계산만 함, **송신 안 함** |
-| 자세 환산 | 기본 EEPROM(rcRate 90, expo 0, HORIZON) 가정 시 저타각에서 1바이트 ≈ 0.72°. 시뮬레이션 최대 기울기 8° | 실기 EEPROM 미확인 → 비모터 읽기(111/113)로 먼저 확인 |
+| 이동 출력 | **새 GOTO 명령을 만들지 않는다.** 외부 위치 루프가 MSP **150**(롤·피치·요·스로틀·AUX 각 1바이트)을 보낸다. `rcData = 1000 + 4×byte`, 중립 125 | 수동 조종은 앱 0.4-control에서 실기 송신. mission 허브는 `rcPreview` 계산만 하고 **송신 안 함** |
+| 자세 환산 | rcRate 90, expo 0, HORIZON(AUX1 전 구간)에서 저타각 1바이트 ≈ 0.72°. 시뮬레이션 최대 기울기 8° | 실기 111/113 읽기로 확인(2026-10-29) |
 | AUX | `0x05` | |
-| ARM 151 | 파생 펌웨어가 **최근 250 ms 안에 150 수신 + 스로틀 ≤1100**일 때만 허용 | 파생본 컴파일만, 업로드 안 함 |
-| DISARM 152 | 기존 경로(약 200 ms 지연) | 긴급 정지 아님 |
+| ARM 151 | 파생 펌웨어가 **최근 250 ms 안에 150 수신 + 스로틀 ≤1100 + I2C 오류 0**일 때만 허용. ARMED 중 150이 500 ms 끊기면 출력 차단 | 실기 업로드·무출력 시험 완료 |
+| DISARM 152 | 즉시 해제(실측 왕복 23 ms, USB) | |
 | 상태 199 | 응답 14바이트: state8, version16, alt16, angle×2(0.1°), altHold16, vbat8, trim×2 | 단위·실측 미확인 |
 | 150 대체 | 200(표준 RC)은 AIR 50 Hz 루프가 덮어써 대체 경로가 아니다 | |
 
 ## 11. 실기 잠금 사유 (`realOutputLocked`)
 
-`no-validated-position-source`(검증된 위치원 없음), `ble-control-tx-not-implemented`, `firmware-arm-guard-not-uploaded`, `battery-and-motor-current-unverified`, `user-flight-approval-required`. 모든 항목이 풀리고 사용자가 별도로 승인하기 전에는 실제 기체로 출력하지 않는다. 허용영역 ±2 m·고도 0.3~1.5 m·속도 0.3 m/s·기울기 8°·도착 반경 0.15 m는 **시뮬레이션 기본값**이다. 실측 근거가 없는 실기 안전값이 아니다.
+`no-validated-position-source`(검증된 위치원 없음), `mission-output-not-wired-to-ble`(수동 조종 송신과 달리 mission 출력은 BLE에 연결하지 않음), `battery-and-motor-current-unverified`, `user-flight-approval-required`. (펌웨어 보호 기능은 2026-10-29 실기에 업로드되어 사유에서 뺐다.) 모든 항목이 풀리고 사용자가 별도로 승인하기 전에는 실제 기체로 출력하지 않는다. 허용영역 ±2 m·고도 0.3~1.5 m·속도 0.3 m/s·기울기 8°·도착 반경 0.15 m는 **시뮬레이션 기본값**이다. 실측 근거가 없는 실기 안전값이 아니다.
 
 ## 12. Quest 쪽 구현 체크리스트
 

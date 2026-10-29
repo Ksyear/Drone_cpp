@@ -34,8 +34,8 @@ class MissionHub(
 ) {
     companion object {
         const val BOUNDARY = "rb022relay"
-        val LOCK_REASONS = listOf("no-validated-position-source", "ble-control-tx-not-implemented",
-            "firmware-arm-guard-not-uploaded", "battery-and-motor-current-unverified", "user-flight-approval-required")
+        val LOCK_REASONS = listOf("no-validated-position-source", "mission-output-not-wired-to-ble",
+            "battery-and-motor-current-unverified", "user-flight-approval-required")
     }
 
     private val running = AtomicBoolean(false)

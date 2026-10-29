@@ -31,7 +31,8 @@ def main():
             raise SystemExit("Existing connection card without its secret header; preserve it before generating new credentials")
         password = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(18))
         with secret.open("x") as output:
-            output.write('#pragma once\nstatic constexpr char CameraPassword[] = "' + password + '";\n')
+            output.write('#pragma once\nstatic constexpr char CameraPassword[] = "' + password + '";\n'
+                         'static constexpr char CameraSsid[] = "RB022-CAM";\n')
         secret.chmod(0o600)
         with card.open("x") as output:
             output.write("SSID: RB022-CAM\nPassword: " + password +

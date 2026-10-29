@@ -6,6 +6,7 @@
 
 static_assert(sizeof(CameraPassword) >= 13 && sizeof(CameraPassword) <= 64,
               "Use a 12..63 character Wi-Fi passphrase");
+static_assert(sizeof(CameraSsid) >= 2 && sizeof(CameraSsid) <= 33, "Use a 1..32 character SSID");
 
 // Facade: one initialization path for the camera, private Wi-Fi AP and JPEG server.
 class CameraFacade final {
@@ -40,7 +41,7 @@ public:
         WiFi.mode(WIFI_AP);
         const IPAddress local(192, 168, 4, 1), mask(255, 255, 255, 0);
         if (!WiFi.softAPConfig(local, local, mask) ||
-            !WiFi.softAP("RB022-CAM", CameraPassword, 1, false, 2)) {
+            !WiFi.softAP(CameraSsid, CameraPassword, 1, false, 2)) {
             WiFi.softAPdisconnect(true);
             esp_camera_deinit();
             Serial.println("CAMERA WI-FI FAILED");

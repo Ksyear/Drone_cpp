@@ -1,0 +1,56 @@
+package kr.ac.rb022
+
+import org.junit.Assert.*
+import org.junit.Test
+
+class MspCodecTest {
+    private fun reply(command: Int, payload: ByteArray, error: Boolean = false): ByteArray {
+        val request = Msp.request(command, payload)
+        request[2] = (if (error) '!' else '>').code.toByte()
+        return request
+    }
+
+    @Test fun requestsMatchFirmwareFraming() {
+        assertEquals("24 4D 3C 00 C7 C7", Msp.hex(Msp.request(Msp.AIR)))
+        assertEquals("24 4D 3C 00 97 97", Msp.hex(Msp.request(Msp.ARM)))
+        assertEquals("24 4D 3C 00 98 98", Msp.hex(Msp.request(Msp.DISARM)))
+        assertEquals("24 4D 3C 00 6F 6F", Msp.hex(Msp.request(Msp.RC_TUNING)))
+        assertArrayEquals(Rc150(125, 125, 125, 0, 5).frame(), Msp.request(150, byteArrayOf(125, 125, 125, 0, 5)))
+    }
+
+    @Test fun decodesAirStatusFromFragmentedNotifications() {
+        // flightState armed|1, id 231, alt -3, roll -12.5 deg, pitch 3.0 deg, altHold 40, vbat 168, trims -2/+1
+        val payload = byteArrayOf(0x81.toByte(), 231.toByte(), 0, 0xFD.toByte(), 0xFF.toByte(), 0x83.toByte(), 0xFF.toByte(),
+            30, 0, 40, 0, 168.toByte(), 0xFE.toByte(), 1)
+        val bytes = byteArrayOf(0x00, 0x24) + reply(Msp.AIR, payload)   // stray byte like the firmware's ARM tail
+        val parser = MspParser()
+        val frames = bytes.toList().chunked(7).flatMap { parser.feed(it.toByteArray()) }
+        val status = AirStatus.decode(frames.single())!!
+        assertTrue(status.armed && status.controlFirmware)
+        assertEquals(listOf(-3, -125, 30, 40, 168, -2, 1),
+            listOf(status.estAlt, status.rollDeci, status.pitchDeci, status.altHold, status.vbatRaw, status.trimPitch, status.trimRoll))
+        assertFalse(AirStatus.decode(frames.single())!!.copy(firmwareId = 100).controlFirmware)  // original firmware id
+    }
+
+    @Test fun rejectsCorruptErrorAndWrongLengthFrames() {
+        val parser = MspParser()
+        val bad = reply(Msp.AIR, ByteArray(14)).also { it[it.lastIndex] = (it.last() + 1).toByte() }
+        assertTrue(parser.feed(bad).isEmpty())
+        assertEquals(1, parser.checksumErrors)
+        val error = parser.feed(reply(Msp.AIR, ByteArray(0), error = true)).single()
+        assertTrue(error.error)
+        assertNull(AirStatus.decode(error))
+        assertNull(AirStatus.decode(parser.feed(reply(Msp.AIR, ByteArray(13))).single()))
+        assertTrue("oversized length is dropped", parser.feed(byteArrayOf(0x24, 0x4D, 0x3E, 65, 1)).isEmpty())
+    }
+
+    @Test fun decodesConfigurationReplies() {
+        val parser = MspParser()
+        val tuning = RcTuning.decode(parser.feed(reply(Msp.RC_TUNING, byteArrayOf(90, 0, 0, 0, 0, 50, 0))).single())!!
+        assertEquals(90, tuning.rcRate); assertEquals(50, tuning.thrMid)
+        assertEquals(listOf(0, 7), decodeUint16List(parser.feed(reply(Msp.BOX, byteArrayOf(0, 0, 7, 0))).single(), Msp.BOX))
+        assertEquals(listOf(1500, 1000), decodeUint16List(parser.feed(reply(Msp.RC, byteArrayOf(0xDC.toByte(), 5, 0xE8.toByte(), 3))).single(), Msp.RC))
+        val status = BoardStatus.decode(parser.feed(reply(Msp.STATUS, byteArrayOf(0xB8.toByte(), 0x0B, 2, 0, 1, 0, 0, 0, 0, 0, 0))).single())!!
+        assertEquals(3000, status.cycleTimeUs); assertEquals(2, status.i2cErrors)
+    }
+}

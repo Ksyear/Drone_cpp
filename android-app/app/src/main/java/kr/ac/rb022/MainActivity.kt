@@ -5,7 +5,6 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Bundle
-import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -14,6 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -25,9 +25,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -39,7 +37,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -51,6 +49,7 @@ private val Outline = Color(0xff263543)
 private val Muted = Color(0xff8D9EAF)
 private val Accent = Color(0xff66E3CC)
 private val Coral = Color(0xffFF646E)
+private val Amber = Color(0xffFFC46B)
 private val White = Color(0xffEDF4FA)
 
 class MainActivity : ComponentActivity() {
@@ -68,64 +67,47 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(SystemBarStyle.dark(0xff090E14.toInt()), SystemBarStyle.dark(0xff090E14.toInt()))
         ble = DroneBleClient(applicationContext)
+        ble.sticks = { preview }
         camera = CameraClient(applicationContext)
         val preferences = getSharedPreferences("camera", MODE_PRIVATE)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Accent, onPrimary = Background,
                 background = Background, surface = Panel, onSurface = White, error = Coral, outline = Outline)) {
-                var showLink by rememberSaveable { mutableStateOf(false) }
-                var showCamera by rememberSaveable { mutableStateOf(false) }
-                var showMission by rememberSaveable { mutableStateOf(false) }
+                var showSettings by rememberSaveable { mutableStateOf(false) }
                 var address by rememberSaveable { mutableStateOf(preferences.getString("stream", "") ?: "") }
                 LaunchedEffect(ble.connected) { if (!ble.connected) preview = ControlPreview() }
                 Surface(Modifier.fillMaxSize(), color = Background) {
-                    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 16.dp)) {
-                        ConsoleHeader(ble.connected, camera.active, mission != null, { showLink = true }, { showCamera = true }, { showMission = true })
-                        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-                            val wide = maxWidth > maxHeight
-                            if (wide) {
-                                Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    ControlPod("01", "THROTTLE", "YAW", preview.yaw, 1f - 2f * preview.throttle,
-                                        "${(preview.throttle * 100).toInt()}%", Modifier.width(152.dp),
-                                        { x, y -> preview = preview.left(x, y) }, { preview = preview.copy(throttle = 0f, yaw = 0f) })
-                                    CameraViewport(camera, Modifier.weight(1f).fillMaxHeight(), { showCamera = true })
-                                    ControlPod("02", "PITCH", "ROLL", preview.roll, -preview.pitch,
-                                        "${(preview.pitch * 100).toInt()} / ${(preview.roll * 100).toInt()}", Modifier.width(152.dp),
-                                        { x, y -> preview = preview.right(x, y) }, { preview = preview.copy(pitch = 0f, roll = 0f) })
-                                }
-                            } else {
-                                Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    CameraViewport(camera, Modifier.weight(1f).fillMaxWidth(), { showCamera = true })
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                                        ControlPod("01", "THROTTLE", "YAW", preview.yaw, 1f - 2f * preview.throttle,
-                                            "${(preview.throttle * 100).toInt()}%", Modifier.weight(1f),
-                                            { x, y -> preview = preview.left(x, y) }, { preview = preview.copy(throttle = 0f, yaw = 0f) })
-                                        ControlPod("02", "PITCH", "ROLL", preview.roll, -preview.pitch,
-                                            "${(preview.pitch * 100).toInt()} / ${(preview.roll * 100).toInt()}", Modifier.weight(1f),
-                                            { x, y -> preview = preview.right(x, y) }, { preview = preview.copy(pitch = 0f, roll = 0f) })
-                                    }
+                    Row(Modifier.fillMaxSize().safeDrawingPadding().padding(10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        StickPad("THROTTLE", "YAW", preview.yaw, 1f - 2f * preview.throttle,
+                            "${(preview.throttle * 100).toInt()}% · 상한 ${(ble.throttleLimit * 100).toInt()}%",
+                            Modifier.weight(0.3f).fillMaxHeight(), { x, y -> preview = preview.left(x, y) },
+                            { preview = preview.copy(yaw = 0f) })  // throttle holds its position; yaw springs back
+                        Column(Modifier.weight(0.4f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            StatusBar(ble, camera, mission != null) { showSettings = true }
+                            CameraViewport(camera, ble, Modifier.weight(1f).fillMaxWidth(), { showSettings = true }) {
+                                camera.savedMedia?.let { uri ->
+                                    runCatching { startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, camera.savedType)
+                                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
                                 }
                             }
+                            ActionBar(ble, onDisarm = { preview = preview.copy(throttle = 0f); ble.disarm() },
+                                onStop = { preview = ControlPreview(); ble.emergencyStop() })
                         }
-                        MediaBar(camera, {
-                            camera.savedMedia?.let { uri ->
-                                runCatching { startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, camera.savedType)
-                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
-                            }
-                        }, { preview = ControlPreview() })
+                        StickPad("PITCH", "ROLL", preview.roll, -preview.pitch, "${(preview.pitch * 100).toInt()} / ${(preview.roll * 100).toInt()}",
+                            Modifier.weight(0.3f).fillMaxHeight(), { x, y -> preview = preview.right(x, y) },
+                            { preview = preview.copy(pitch = 0f, roll = 0f) })
                     }
                 }
-                if (showLink) LinkSheet(ble, preview, { showLink = false }, {
-                    preview = ControlPreview()
-                    if (ble.hasPermissions()) ble.scan()
-                    else permissionRequest.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
-                }, { preview = it })
-                if (showCamera) CameraSheet(camera, address, { address = it }, { showCamera = false }, {
-                    preferences.edit().putString("stream", address.trim()).apply()
-                    camera.connect(address)
-                    showCamera = false
-                }, { startActivity(Intent(Settings.Panel.ACTION_WIFI)) })
-                if (showMission) MissionSheet(mission, { showMission = false }, { if (mission == null) startMission() else stopMission() })
+                if (showSettings) SettingsSheet(ble, camera, preview, mission, address, { address = it }, { showSettings = false },
+                    onScan = {
+                        preview = ControlPreview()
+                        if (ble.hasPermissions()) ble.scan()
+                        else permissionRequest.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
+                    }, onPreview = { preview = it }, onCameraConnect = {
+                        preferences.edit().putString("stream", address.trim()).apply()
+                        camera.connect(address)
+                    }, onWifi = { startActivity(Intent(Settings.Panel.ACTION_WIFI)) },
+                    onMission = { if (mission == null) startMission() else stopMission() })
             }
         }
     }
@@ -162,7 +144,7 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         stopMission()
         preview = ControlPreview()
-        ble.disconnect("앱 비활성 · 연결 해제")
+        ble.disconnect("앱 비활성 · 연결 해제")  // RC stream stops: the MCU link watchdog cuts armed outputs
         camera.disconnect()
         super.onStop()
     }
@@ -178,256 +160,273 @@ class MainActivity : ComponentActivity() {
 class MissionLink(val session: MissionSession, val controller: MissionController, val clock: () -> Long, val urls: List<String>)
 
 @Composable
-private fun ConsoleHeader(ble: Boolean, camera: Boolean, mission: Boolean, onBle: () -> Unit, onCamera: () -> Unit, onMission: () -> Unit) {
-    Row(Modifier.fillMaxWidth().height(72.dp), verticalAlignment = Alignment.CenterVertically) {
-        Image(painterResource(R.drawable.ic_drone), "AIR COPTER", Modifier.size(34.dp))
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text("AIR COPTER", fontSize = 17.sp, letterSpacing = 2.sp, fontWeight = FontWeight.Bold)
-            Text("RB022  /  FLIGHT CONSOLE", fontSize = 9.sp, letterSpacing = 1.sp, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        StatusChip("BLE", ble, onBle)
-        Spacer(Modifier.width(8.dp))
-        StatusChip("CAM", camera, onCamera)
-        Spacer(Modifier.width(8.dp))
-        StatusChip("QUEST", mission, onMission)
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun MissionSheet(link: MissionLink?, onDismiss: () -> Unit, onToggle: () -> Unit) {
-    var snapshot by remember { mutableStateOf<MissionSnapshot?>(null) }
-    LaunchedEffect(link) {
-        while (link != null) { snapshot = synchronized(link.session) { link.controller.snapshot(link.clock()) }; delay(300) }
-        snapshot = null
-    }
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Panel, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Quest 목표 이동", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Text("Quest 브라우저에서 아래 주소를 열고 코드를 입력하세요. 목표는 가상 드론 시뮬레이션만 움직이며 BLE 조종 송신은 잠겨 있습니다.", color = Muted, fontSize = 12.sp)
-            Button(onClick = onToggle) { Text(if (link == null) "Quest 중계 시작" else "중계 중지") }
-            if (link != null) {
-                Text(link.urls.ifEmpty { listOf("Wi-Fi 주소 없음 — RB022-CAM 또는 같은 Wi-Fi에 연결하세요") }.joinToString("\n"), color = Accent, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
-                Text("연결 코드  ${link.session.pairingCode}", fontSize = 26.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-                snapshot?.let { s ->
-                    Text("${s.state} · ${s.reason.ifEmpty { "-" }}", color = White, fontSize = 13.sp)
-                    Text(s.pose?.let { p -> "SIM W %.2f, %.2f, %.2f m · %d ms".format(p.w.x, p.w.y, p.w.z, s.poseAgeMs ?: 0) } ?: "위치 없음", color = Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                }
-                Text("실기 잠금: " + MissionHub.LOCK_REASONS.joinToString(", "), color = Coral, fontSize = 11.sp)
-            }
-            Text("카메라 영상은 이 휴대폰이 받은 프레임을 Quest로 다시 보냅니다. 카메라에 Quest를 직접 연결하지 마세요(단일 스트림).", color = Muted, fontSize = 11.sp)
+private fun StatusBar(ble: DroneBleClient, camera: CameraClient, quest: Boolean, onSettings: () -> Unit) {
+    val t = ble.telemetry
+    Row(Modifier.fillMaxWidth().height(44.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+      Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Chip(if (ble.uartReady) "BLE" else if (ble.connected) "BLE · UART 없음" else "BLE 끊김", if (ble.uartReady) Accent else Muted)
+        Chip(when { t == null -> "FW —"; t.controlFirmware -> "FW ${t.firmwareId} 보호"; else -> "FW ${t.firmwareId} 잠금" },
+            if (t?.controlFirmware == true) Accent else Muted)
+        Chip(when { t == null -> "상태 —"; t.armed -> "ARMED"; else -> "DISARMED" }, if (t?.armed == true) Coral else Muted)
+        Chip(if (ble.controlEnabled) "송신 ${ble.framesSent}" else "송신 꺼짐", if (ble.controlEnabled) Amber else Muted)
+        Chip(if (camera.active) "CAM ${camera.framesPerSecond}fps" else "CAM —", if (camera.active) Accent else Muted)
+        if (quest) Chip("QUEST", Accent)
+      }
+        Surface(onClick = onSettings, shape = RoundedCornerShape(12.dp), color = Panel, border = BorderStroke(1.dp, Outline),
+            modifier = Modifier.semantics { contentDescription = "설정" }) {
+            Text("설정", Modifier.padding(horizontal = 16.dp, vertical = 10.dp), fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
 
 @Composable
-private fun StatusChip(label: String, online: Boolean, onClick: () -> Unit) {
-    Surface(onClick = onClick, shape = RoundedCornerShape(12.dp), color = Panel, border = BorderStroke(1.dp, Outline)) {
-        Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-            Box(Modifier.size(6.dp).background(if (online) Accent else Muted, CircleShape))
-            Text(label, color = if (online) Accent else White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        }
-    }
+private fun Chip(text: String, color: Color) {
+    Text(text, color = color, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 1,
+        modifier = Modifier.border(1.dp, Outline, RoundedCornerShape(10.dp)).padding(horizontal = 8.dp, vertical = 6.dp))
 }
 
 @Composable
-private fun CameraViewport(camera: CameraClient, modifier: Modifier, onSettings: () -> Unit) {
-    Box(modifier.clip(RoundedCornerShape(22.dp)).background(Color(0xff0C141D)).border(1.dp, Outline, RoundedCornerShape(22.dp))) {
+private fun CameraViewport(camera: CameraClient, ble: DroneBleClient, modifier: Modifier, onSettings: () -> Unit, onGallery: () -> Unit) {
+    var frameAge by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(camera.active) {
+        while (camera.active) { frameAge = camera.relayFrame()?.let { System.nanoTime() / 1_000_000 - it.receivedMs }; delay(300) }
+        frameAge = null
+    }
+    Box(modifier.clip(RoundedCornerShape(18.dp)).background(Color(0xff0C141D)).border(1.dp, Outline, RoundedCornerShape(18.dp))) {
         val image = camera.bitmap
         if (image != null) Image(image.asImageBitmap(), "ESP32-CAM 실시간 영상", Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
         else {
             Canvas(Modifier.fillMaxSize()) {
                 val grid = Color(0xff192733)
                 for (x in 0..12) drawLine(grid, Offset(size.width * x / 12, 0f), Offset(size.width * x / 12, size.height))
-                for (y in 0..10) drawLine(grid, Offset(0f, size.height * y / 10), Offset(size.width, size.height * y / 10))
-                drawCircle(Color(0xff203A45), size.minDimension * .24f, style = Stroke(1.dp.toPx()))
-                drawCircle(Color(0xff294B54), size.minDimension * .16f, style = Stroke(1.dp.toPx()))
+                for (y in 0..8) drawLine(grid, Offset(0f, size.height * y / 8), Offset(size.width, size.height * y / 8))
             }
             Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Background.copy(.1f), Background.copy(.8f)))))
-            Column(Modifier.align(Alignment.Center).padding(top = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(painterResource(R.drawable.ic_camera), null, Modifier.size(34.dp), tint = Accent)
-                Spacer(Modifier.height(10.dp))
-                Text(if (camera.connecting) "영상 연결 중" else "카메라를 연결하세요", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
-                Text("ESP32-CAM · Wi-Fi MJPEG", color = Muted, fontSize = 11.sp)
-                if (camera.connecting) { Spacer(Modifier.height(12.dp)); CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
-                else TextButton(onClick = onSettings) { Text("영상 연결 설정", fontSize = 12.sp) }
+            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(painterResource(R.drawable.ic_camera), null, Modifier.size(30.dp), tint = Accent)
+                Text(if (camera.connecting) "영상 연결 중" else "카메라 영상 없음", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                if (camera.connecting) CircularProgressIndicator(Modifier.padding(top = 8.dp).size(18.dp), strokeWidth = 2.dp)
+                else TextButton(onClick = onSettings) { Text("설정에서 카메라 연결", fontSize = 12.sp) }
             }
         }
-        Row(Modifier.align(Alignment.TopStart).fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            HudTag(if (camera.active) "LIVE  /  ${camera.framesPerSecond} FPS" else "CAMERA  /  OFFLINE", if (camera.active) Accent else Muted)
-            HudTag("제어 송신 잠금", Muted)
+        val t = ble.telemetry
+        Row(Modifier.align(Alignment.TopStart).fillMaxWidth().padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            HudTag(when {
+                !camera.active -> "CAMERA OFFLINE"
+                (frameAge ?: 0) > 1000 -> "영상 끊김 · ${frameAge} ms 전 수신"
+                else -> "LIVE ${camera.framesPerSecond} FPS · 수신 후 ${frameAge ?: 0} ms"
+            }, if (camera.active && (frameAge ?: 0) <= 1000) Accent else Muted)
+            if (camera.recording) HudTag("REC", Coral)
         }
-        Row(Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            HudTag(if (image != null) "${image.width} × ${image.height}" else "영상 신호 대기", Muted)
-            if (camera.recording) HudTag("REC", Coral) else HudTag("IMU · BAT  —", Muted)
+        Row(Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            HudTag(t?.let { "ROLL %.1f°  PITCH %.1f°".format(it.rollDeci / 10f, it.pitchDeci / 10f) } ?: "자세 —", Muted)
+            HudTag(t?.let { "VBAT raw ${it.vbatRaw} · ${ble.telemetryAgeMs ?: 0} ms" } ?: "상태 수신 없음", Muted)
+        }
+        Column(Modifier.align(Alignment.CenterEnd).padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilledIconButton(onClick = { camera.snapshot() }, enabled = camera.active && !camera.savingPhoto, modifier = Modifier.size(44.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(containerColor = White, contentColor = Background)) {
+                Icon(painterResource(R.drawable.ic_camera), "사진 촬영", Modifier.size(20.dp))
+            }
+            OutlinedIconButton(onClick = { camera.toggleRecording() }, enabled = camera.active || camera.recording, modifier = Modifier.size(44.dp),
+                border = BorderStroke(2.dp, if (camera.active) Coral else Outline)) {
+                Box(Modifier.size(if (camera.recordRequested) 14.dp else 18.dp)
+                    .background(if (camera.active) Coral else Muted, if (camera.recordRequested) RoundedCornerShape(4.dp) else CircleShape)
+                    .semantics { contentDescription = if (camera.recordRequested) "녹화 정지 및 저장" else "영상 녹화 시작" })
+            }
+            IconButton(onClick = onGallery, enabled = camera.savedMedia != null, modifier = Modifier.size(44.dp).background(Panel, RoundedCornerShape(12.dp))) {
+                Icon(painterResource(R.drawable.ic_gallery), "마지막 저장 사진 또는 영상 열기", tint = if (camera.savedMedia != null) White else Muted)
+            }
         }
     }
 }
 
 @Composable
 private fun HudTag(text: String, color: Color) {
-    Text(text, color = color, fontSize = 9.sp, fontFamily = FontFamily.Monospace,
-        modifier = Modifier.background(Background.copy(alpha = .84f), RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 6.dp))
+    Text(text, color = color, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+        modifier = Modifier.background(Background.copy(alpha = .84f), RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 5.dp))
 }
 
 @Composable
-private fun ControlPod(index: String, primary: String, secondary: String, x: Float, y: Float, value: String,
-                       modifier: Modifier, onMove: (Float, Float) -> Unit, onRelease: () -> Unit) {
-    Column(modifier.clip(RoundedCornerShape(20.dp)).background(Panel).border(1.dp, Outline, RoundedCornerShape(20.dp))
-        .padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+private fun ActionBar(ble: DroneBleClient, onDisarm: () -> Unit, onStop: () -> Unit) {
+    val armed = ble.telemetry?.armed == true
+    val canArm = ble.framesSent >= 0 && ble.canArm()  // framesSent read keeps this recomposing while streaming
+    Row(Modifier.fillMaxWidth().height(64.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(14.dp))
+            .background(if (canArm) Accent.copy(alpha = .22f) else Panel).border(1.dp, if (canArm) Accent else Outline, RoundedCornerShape(14.dp))
+            .pointerInput(Unit) { detectTapGestures(onLongPress = { ble.arm() }) }
+            .semantics { contentDescription = "길게 눌러 시동" }, contentAlignment = Alignment.Center) {
+            Text(if (armed) "ARMED" else "길게 눌러\n시동", color = if (canArm || armed) White else Muted, fontWeight = FontWeight.Bold,
+                fontSize = 13.sp, textAlign = TextAlign.Center)
+        }
+        OutlinedButton(onClick = onDisarm, enabled = ble.uartReady, modifier = Modifier.weight(1f).fillMaxHeight(), shape = RoundedCornerShape(14.dp),
+            contentPadding = PaddingValues(4.dp)) {
+            Text("DISARM", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        }
+        Button(onClick = onStop, modifier = Modifier.weight(1.2f).fillMaxHeight(), shape = RoundedCornerShape(14.dp), contentPadding = PaddingValues(4.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Coral, contentColor = Background)) {
+            Text("STOP", fontWeight = FontWeight.Black, fontSize = 18.sp)
+        }
+    }
+}
+
+@Composable
+private fun StickPad(primary: String, secondary: String, x: Float, y: Float, value: String,
+                     modifier: Modifier, onMove: (Float, Float) -> Unit, onRelease: () -> Unit) {
+    Column(modifier.clip(RoundedCornerShape(20.dp)).background(Panel).border(1.dp, Outline, RoundedCornerShape(20.dp)).padding(10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(primary, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-            Text(index, color = Muted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+            Text(primary, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+            Text(secondary, color = Muted, fontSize = 11.sp, letterSpacing = 1.sp)
         }
         val move by rememberUpdatedState(onMove)
         val release by rememberUpdatedState(onRelease)
-        Canvas(Modifier.padding(vertical = 5.dp).size(124.dp)
-            .semantics { contentDescription = "$primary / $secondary 조이스틱 미리보기, BLE 패널에 접근성 슬라이더 제공" }
+        Canvas(Modifier.weight(1f).fillMaxWidth().padding(vertical = 6.dp)
+            .semantics { contentDescription = "$primary / $secondary 조이스틱, 설정의 드론 진단에 접근성 슬라이더 제공" }
             .pointerInput(Unit) {
                 detectDragGestures(onDragEnd = { release() }, onDragCancel = { release() }, onDrag = { change, _ ->
                     change.consume()
-                    move((change.position.x / size.width * 2 - 1).coerceIn(-1f, 1f),
-                        (change.position.y / size.height * 2 - 1).coerceIn(-1f, 1f))
+                    val r = size.width.coerceAtMost(size.height) / 2f
+                    move(((change.position.x - size.width / 2f) / r).coerceIn(-1f, 1f), ((change.position.y - size.height / 2f) / r).coerceIn(-1f, 1f))
                 })
             }) {
             val c = center
-            val radius = size.minDimension / 2 - 5.dp.toPx()
+            val radius = size.minDimension / 2 - 4.dp.toPx()
             drawCircle(Color(0xff0B121A), radius)
             drawCircle(Outline, radius, style = Stroke(1.dp.toPx()))
-            drawCircle(Outline, radius * .65f, style = Stroke(1.dp.toPx()))
+            drawCircle(Outline, radius * .6f, style = Stroke(1.dp.toPx()))
             drawLine(Outline, Offset(c.x - radius, c.y), Offset(c.x + radius, c.y))
             drawLine(Outline, Offset(c.x, c.y - radius), Offset(c.x, c.y + radius))
-            val knob = c + Offset(x * (radius - 14.dp.toPx()), y * (radius - 14.dp.toPx()))
+            val knob = c + Offset(x * (radius - 24.dp.toPx()), y * (radius - 24.dp.toPx()))
             drawLine(Accent.copy(alpha = .55f), c, knob, 2.dp.toPx())
-            drawCircle(Accent.copy(alpha = .1f), 23.dp.toPx(), knob)
-            drawCircle(Color(0xff263F46), 15.dp.toPx(), knob)
-            drawCircle(Accent, 15.dp.toPx(), knob, style = Stroke(1.5.dp.toPx()))
-            drawCircle(Accent, 3.dp.toPx(), knob)
+            drawCircle(Accent.copy(alpha = .12f), 34.dp.toPx(), knob)
+            drawCircle(Color(0xff263F46), 22.dp.toPx(), knob)
+            drawCircle(Accent, 22.dp.toPx(), knob, style = Stroke(2.dp.toPx()))
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(secondary, color = Muted, fontSize = 9.sp, letterSpacing = 1.sp)
-            Text(value, color = Accent, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-        }
-    }
-}
-
-@Composable
-private fun MediaBar(camera: CameraClient, onGallery: () -> Unit, onReset: () -> Unit) {
-    var elapsed by remember { mutableStateOf(0L) }
-    LaunchedEffect(camera.recording, camera.recordStarted) {
-        while (camera.recording) { elapsed = (SystemClock.elapsedRealtime() - camera.recordStarted) / 1000; delay(500) }
-    }
-    Column(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 6.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            Column(Modifier.width(70.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                IconButton(onClick = onGallery, enabled = camera.savedMedia != null,
-                    modifier = Modifier.size(48.dp).background(Panel, RoundedCornerShape(14.dp))) {
-                    Icon(painterResource(R.drawable.ic_gallery), "마지막 저장 사진 또는 영상 열기", tint = if (camera.savedMedia != null) White else Muted)
-                }
-                Text("갤러리", color = Muted, fontSize = 9.sp)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    FilledIconButton(onClick = { camera.snapshot() }, enabled = camera.active && !camera.savingPhoto,
-                        modifier = Modifier.size(54.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = White, contentColor = Background)) {
-                        Icon(painterResource(R.drawable.ic_camera), "사진 촬영", Modifier.size(24.dp))
-                    }
-                    Text(if (camera.savingPhoto) "저장 중" else "촬영", color = Muted, fontSize = 9.sp)
-                }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    OutlinedIconButton(onClick = { camera.toggleRecording() }, enabled = camera.active || camera.recording,
-                        modifier = Modifier.size(54.dp), border = BorderStroke(2.dp, if (camera.active) Coral else Outline)) {
-                        Box(Modifier.size(if (camera.recordRequested) 18.dp else 22.dp)
-                            .background(if (camera.active) Coral else Muted, if (camera.recordRequested) RoundedCornerShape(4.dp) else CircleShape)
-                            .semantics { contentDescription = if (camera.recordRequested) "녹화 정지 및 저장" else "영상 녹화 시작" })
-                    }
-                    Text(if (camera.recording) "%02d:%02d".format(elapsed / 60, elapsed % 60) else if (camera.recordRequested) "준비 중" else "녹화",
-                        color = if (camera.recording) Coral else Muted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
-                }
-            }
-            TextButton(onClick = onReset, modifier = Modifier.width(70.dp)) { Text("입력\n초기화", fontSize = 10.sp, color = Muted) }
-        }
-        if (camera.message.isNotEmpty()) Text(camera.message, Modifier.fillMaxWidth().padding(top = 5.dp), fontSize = 10.sp, color = Accent, maxLines = 2)
-        else Text("조종은 미리보기입니다 · 모터 정지 명령을 보내지 않습니다", Modifier.padding(top = 5.dp), fontSize = 9.sp, color = Muted)
+        Text(value, color = Accent, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CameraSheet(camera: CameraClient, address: String, onAddress: (String) -> Unit, onDismiss: () -> Unit,
-                        onConnect: () -> Unit, onWifi: () -> Unit) {
-    var error by remember { mutableStateOf("") }
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Panel,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp).padding(bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("카메라 연결", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Text("ESP32-CAM과 같은 Wi-Fi에 연결하세요.\n카메라 영상과 BLE 조종 연결은 별개입니다.", color = Muted, fontSize = 13.sp)
-            Text("RB022-CAM 펌웨어 사용 시 휴대폰 Wi-Fi에서 RB022-CAM에 연결한 뒤 아래 주소 버튼을 누르세요. USB 연결만으로는 영상이 나오지 않습니다.", color = Muted, fontSize = 12.sp)
-            TextButton(onClick = { onAddress("http://192.168.4.1:81/stream"); error = "" }) { Text("RB022-CAM 주소 사용") }
-            OutlinedTextField(address, { onAddress(it); error = "" }, label = { Text("MJPEG 스트림 주소") },
-                placeholder = { Text("http://192.168.1.50:81/stream", fontSize = 12.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth(), isError = error.isNotEmpty())
-            if (error.isNotEmpty()) Text(error, color = Coral, fontSize = 12.sp)
-            Text(camera.status, color = Muted, fontSize = 12.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = { try { cameraUrl(address); onConnect() } catch (e: Exception) { error = e.message ?: "주소 오류" } }) { Text("영상 연결") }
-                OutlinedButton(onClick = { camera.disconnect(); onDismiss() }) { Text("연결 해제") }
-                TextButton(onClick = onWifi) { Text("Wi-Fi") }
+private fun SettingsSheet(ble: DroneBleClient, camera: CameraClient, preview: ControlPreview, mission: MissionLink?, address: String,
+                          onAddress: (String) -> Unit, onDismiss: () -> Unit, onScan: () -> Unit, onPreview: (ControlPreview) -> Unit,
+                          onCameraConnect: () -> Unit, onWifi: () -> Unit, onMission: () -> Unit) {
+    var tab by rememberSaveable { mutableStateOf(0) }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Panel, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+            TabRow(selectedTabIndex = tab, containerColor = Panel) {
+                listOf("드론", "카메라", "Quest").forEachIndexed { i, label -> Tab(tab == i, { tab = i }, text = { Text(label) }) }
             }
-            Text("촬영은 JPEG, 녹화는 무음 MP4로 휴대폰 갤러리에 저장됩니다. 앱을 나가거나 화면을 회전하면 연결과 녹화를 종료합니다.", color = Muted, fontSize = 11.sp)
+            Spacer(Modifier.height(12.dp))
+            when (tab) {
+                0 -> DroneSettings(ble, preview, onScan, onPreview)
+                1 -> CameraSettings(camera, address, onAddress, onCameraConnect, onWifi)
+                else -> QuestSettings(mission, onMission)
+            }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LinkSheet(ble: DroneBleClient, preview: ControlPreview, onDismiss: () -> Unit, onScan: () -> Unit,
-                      onPreview: (ControlPreview) -> Unit) {
+private fun DroneSettings(ble: DroneBleClient, preview: ControlPreview, onScan: () -> Unit, onPreview: (ControlPreview) -> Unit) {
     var diagnostics by remember { mutableStateOf(false) }
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Panel) {
-        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 560.dp), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 520.dp), contentPadding = PaddingValues(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Text(ble.status, color = Muted, fontSize = 12.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = onScan, enabled = !ble.scanning) { Text(if (ble.scanning) "검색 중" else "BLE 검색") }
+                OutlinedButton(onClick = { ble.disconnect() }) { Text("연결 해제") }
+                OutlinedButton(onClick = { ble.readConfig() }, enabled = ble.uartReady) { Text("설정 읽기") }
+            }
+        }
+        items(ble.devices, key = { it.address }) { device ->
+            Surface(onClick = { ble.connect(device.address) }, shape = RoundedCornerShape(12.dp), color = Background) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column { Text(device.name); Text(device.address, color = Muted, fontSize = 10.sp) }
+                    Text("${device.rssi} dBm", color = Accent, fontSize = 11.sp)
+                }
+            }
+        }
+        item {
+            val t = ble.telemetry
+            Text("상태(199)", fontWeight = FontWeight.Bold)
+            Text(t?.let { "flightState 0x%02X · ${if (it.armed) "ARMED" else "DISARMED"} · FW ${it.firmwareId}\nroll ${it.rollDeci / 10f}° pitch ${it.pitchDeci / 10f}° · alt ${it.estAlt} · altHold ${it.altHold} (방향값 아님)\nvbat raw ${it.vbatRaw} · trim ${it.trimPitch}/${it.trimRoll} · ${ble.telemetryAgeMs} ms 전".format(it.flightState) }
+                ?: "응답 없음", color = Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+            if (ble.config.isNotEmpty()) Text(ble.config, color = Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+        }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("조종 송신", fontWeight = FontWeight.Bold)
+                    Text("보호 펌웨어(ID ${Msp.CONTROL_FIRMWARE_ID})가 응답할 때만 켜집니다. 송신이 끊기면 MCU가 0.5초 안에 출력을 끊습니다.", color = Muted, fontSize = 11.sp)
+                }
+                Switch(ble.controlEnabled, { ble.setControl(it) })
+            }
+            Text("스로틀 상한 ${(ble.throttleLimit * 100).toInt()}% (벤치 시험값)", color = Muted, fontSize = 12.sp)
+            Slider(ble.throttleLimit, { ble.throttleLimit = it }, valueRange = 0.1f..1f)
+            Text("조종 감도 ${(ble.axisLimit * 100).toInt()}%", color = Muted, fontSize = 12.sp)
+            Slider(ble.axisLimit, { ble.axisLimit = it }, valueRange = 0.2f..1f)
+            TextButton(onClick = { diagnostics = !diagnostics }) { Text(if (diagnostics) "진단 접기" else "GATT 진단 / 접근성 입력") }
+        }
+        if (diagnostics) {
+            items(ble.items, key = { it.id }) { item ->
+                Column {
+                    Text(item.service, fontSize = 10.sp, color = Muted)
+                    Text(item.uuid, fontSize = 11.sp)
+                    Text(item.properties, fontSize = 10.sp, color = Accent)
+                    if (item.readable) TextButton(onClick = { ble.read(item.id) }, enabled = !ble.reading) { Text("HEX 읽기") }
+                }
+            }
             item {
-                Text("드론 연결", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                Text("휴대폰 Bluetooth 설정에서 페어링하는 대신 이 화면의 BLE 검색으로 기기를 선택하세요.", color = Muted, fontSize = 12.sp)
-                Text(ble.status, color = Muted, fontSize = 12.sp)
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(onClick = onScan, enabled = !ble.scanning) { Text(if (ble.scanning) "검색 중" else "BLE 검색") }
-                    OutlinedButton(onClick = { ble.disconnect() }) { Text("연결 해제") }
-                }
+                Text(ble.logs.takeLast(8).joinToString("\n").ifEmpty { "수신 기록 없음" }, fontSize = 10.sp, color = Muted)
+                Text("아래 슬라이더는 스틱과 같으며 조종 송신이 켜져 있으면 전송됩니다.", color = Amber, fontSize = 11.sp)
+                PreviewSlider("스로틀", preview.throttle, 0f..1f) { onPreview(preview.copy(throttle = it)) }
+                PreviewSlider("Yaw", preview.yaw, -1f..1f) { onPreview(preview.copy(yaw = it)) }
+                PreviewSlider("Roll", preview.roll, -1f..1f) { onPreview(preview.copy(roll = it)) }
+                PreviewSlider("Pitch", preview.pitch, -1f..1f) { onPreview(preview.copy(pitch = it)) }
             }
-            items(ble.devices, key = { it.address }) { device ->
-                Surface(onClick = { ble.connect(device.address) }, shape = RoundedCornerShape(12.dp), color = Background) {
-                    Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Column { Text(device.name); Text(device.address, color = Muted, fontSize = 10.sp) }
-                        Text("${device.rssi} dBm", color = Accent, fontSize = 11.sp)
-                    }
-                }
+        }
+    }
+}
+
+@Composable
+private fun CameraSettings(camera: CameraClient, address: String, onAddress: (String) -> Unit, onConnect: () -> Unit, onWifi: () -> Unit) {
+    var error by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("휴대폰을 카메라 Wi-Fi(카메라가 만드는 AP)에 연결한 뒤 주소를 입력하세요. 영상(Wi-Fi)과 조종(BLE)은 별개입니다.", color = Muted, fontSize = 12.sp)
+        TextButton(onClick = { onAddress("http://192.168.4.1:81/stream"); error = "" }) { Text("카메라 AP 주소 사용") }
+        OutlinedTextField(address, { onAddress(it); error = "" }, label = { Text("MJPEG 스트림 주소") },
+            placeholder = { Text("http://192.168.4.1:81/stream", fontSize = 12.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth(), isError = error.isNotEmpty())
+        if (error.isNotEmpty()) Text(error, color = Coral, fontSize = 12.sp)
+        Text(camera.status + if (camera.message.isNotEmpty()) " · ${camera.message}" else "", color = Muted, fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = { try { cameraUrl(address); onConnect() } catch (e: Exception) { error = e.message ?: "주소 오류" } }) { Text("영상 연결") }
+            OutlinedButton(onClick = { camera.disconnect() }) { Text("연결 해제") }
+            TextButton(onClick = onWifi) { Text("Wi-Fi") }
+        }
+        Text("촬영은 JPEG, 녹화는 무음 MP4로 갤러리에 저장됩니다. 앱을 나가면 연결과 녹화를 종료합니다.", color = Muted, fontSize = 11.sp)
+    }
+}
+
+@Composable
+private fun QuestSettings(link: MissionLink?, onToggle: () -> Unit) {
+    var snapshot by remember { mutableStateOf<MissionSnapshot?>(null) }
+    LaunchedEffect(link) {
+        while (link != null) { snapshot = synchronized(link.session) { link.controller.snapshot(link.clock()) }; delay(300) }
+        snapshot = null
+    }
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Quest에서 아래 주소와 코드로 접속합니다. 목표 이동은 가상 드론만 움직이며 기체로 보내지 않습니다.", color = Muted, fontSize = 12.sp)
+        Button(onClick = onToggle) { Text(if (link == null) "Quest 중계 시작" else "중계 중지") }
+        if (link != null) {
+            Text(link.urls.ifEmpty { listOf("Wi-Fi 주소 없음 — 같은 Wi-Fi에 연결하세요") }.joinToString("\n"), color = Accent, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
+            Text("연결 코드  ${link.session.pairingCode}", fontSize = 24.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+            snapshot?.let { s ->
+                Text("${s.state} · ${s.reason.ifEmpty { "-" }}", color = White, fontSize = 13.sp)
+                Text(s.pose?.let { p -> "SIM W %.2f, %.2f, %.2f m · %d ms".format(p.w.x, p.w.y, p.w.z, s.poseAgeMs ?: 0) } ?: "위치 없음",
+                    color = Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
             }
-            item {
-                Text("실제 제어는 잠금 상태", color = Accent, fontSize = 13.sp)
-                Text("센서·전원·안전 제어가 검증되기 전까지 조종 입력은 전송되지 않습니다. 앱은 실제 기체의 긴급 정지 기능을 제공하지 않습니다.", color = Muted, fontSize = 12.sp)
-                TextButton(onClick = { diagnostics = !diagnostics }) { Text(if (diagnostics) "진단 접기" else "GATT 진단 / 접근성 입력") }
-            }
-            if (diagnostics) {
-                items(ble.items, key = { it.id }) { item ->
-                    Column {
-                        Text(item.service, fontSize = 10.sp, color = Muted)
-                        Text(item.uuid, fontSize = 11.sp)
-                        Text(item.properties, fontSize = 10.sp, color = Accent)
-                        if (item.readable) TextButton(onClick = { ble.read(item.id) }, enabled = !ble.reading) { Text("HEX 읽기") }
-                    }
-                }
-                item {
-                    Text(ble.logs.takeLast(6).joinToString("\n").ifEmpty { "진단 수신 기록 없음" }, fontSize = 10.sp, color = Muted)
-                    PreviewSlider("스로틀 미리보기", preview.throttle, 0f..1f) { onPreview(preview.copy(throttle = it)) }
-                    PreviewSlider("Yaw 미리보기", preview.yaw, -1f..1f) { onPreview(preview.copy(yaw = it)) }
-                    PreviewSlider("Roll 미리보기", preview.roll, -1f..1f) { onPreview(preview.copy(roll = it)) }
-                    PreviewSlider("Pitch 미리보기", preview.pitch, -1f..1f) { onPreview(preview.copy(pitch = it)) }
-                }
-            }
+            Text("실기 자동이동 잠금: " + MissionHub.LOCK_REASONS.joinToString(", "), color = Coral, fontSize = 11.sp)
         }
     }
 }

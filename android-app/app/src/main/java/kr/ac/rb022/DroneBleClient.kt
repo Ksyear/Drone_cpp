@@ -9,9 +9,17 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import java.util.UUID
+
+private const val TAG = "RB022-MSP"
+private val SERVICE: UUID = UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb")
+private val UART: UUID = UUID.fromString("0000ffe1-0000-1000-8000-00805f9b34fb")
+private val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
 data class BleDevice(val address: String, val name: String, val rssi: Int)
 data class GattItem(val id: Int, val service: String, val uuid: String, val properties: String, val readable: Boolean)
@@ -34,6 +42,47 @@ class DroneBleClient(private val context: Context) {
         private set
     var reading by mutableStateOf(false)
         private set
+    var uartReady by mutableStateOf(false)
+        private set
+    var telemetry by mutableStateOf<AirStatus?>(null)
+        private set
+    var telemetryAgeMs by mutableStateOf<Long?>(null)
+        private set
+    var config by mutableStateOf("")
+        private set
+    var controlEnabled by mutableStateOf(false)
+        private set
+    var framesSent by mutableStateOf(0)
+        private set
+    /** Stick source and bench output limits, read on every control frame. */
+    var sticks: () -> ControlPreview = { ControlPreview() }
+    var throttleLimit by mutableStateOf(0.15f)
+    var axisLimit by mutableStateOf(0.5f)
+    private val parser = MspParser()
+    private var uart: BluetoothGattCharacteristic? = null
+    private class Op(val command: Int, val bytes: ByteArray?)  // bytes == null: enable notifications
+    private val ops = ArrayDeque<Op>()
+    private var opBusy = false
+    private var opToken = 0
+    private var telemetryAt = 0L
+    private var framesSinceEnable = 0
+    private var airCount = 0
+    private val telemetryTick = object : Runnable {
+        override fun run() {
+            if (!uartReady) return
+            if (ops.none { it.command == Msp.AIR }) enqueue(Op(Msp.AIR, Msp.request(Msp.AIR)))
+            telemetryAgeMs = if (telemetryAt == 0L) null else SystemClock.elapsedRealtime() - telemetryAt
+            handler.postDelayed(this, 200)
+        }
+    }
+    private val controlTick = object : Runnable {
+        override fun run() {
+            if (!controlEnabled || !uartReady) return
+            ops.removeAll { it.command == Msp.RC_COMPACT }
+            enqueue(Op(Msp.RC_COMPACT, sticks().rc(throttleLimit, axisLimit).frame()))
+            handler.postDelayed(this, 50)
+        }
+    }
     private var gatt: BluetoothGatt? = null
     private var scanner: BluetoothLeScanner? = null
     private var scanCallback: ScanCallback? = null
@@ -79,8 +128,12 @@ class DroneBleClient(private val context: Context) {
                 handler.post {
                     if (scanCallback !== this || !scanning) return@post
                     safely {
-                        val entry = BleDevice(result.device.address, result.scanRecord?.deviceName ?: "이름 없음", result.rssi)
-                        devices = (devices.filterNot { it.address == entry.address } + entry).takeLast(128)
+                        val name = result.scanRecord?.deviceName ?: result.device.name ?: "이름 없음"
+                        val entry = BleDevice(result.device.address, name, result.rssi)
+                        // AIR#### (kit manual) first, then named devices; RSSI updates keep the row in place so taps do not jump
+                        val known = devices.indexOfFirst { it.address == entry.address }
+                        devices = (if (known >= 0) devices.toMutableList().also { it[known] = entry } else devices + entry).takeLast(128)
+                            .sortedWith(compareByDescending<BleDevice> { it.name.startsWith("AIR", ignoreCase = true) }.thenByDescending { it.name != "이름 없음" })
                     }
                 }
             }
@@ -134,16 +187,42 @@ class DroneBleClient(private val context: Context) {
                     val p = characteristic.properties
                     val names = listOf(
                         BluetoothGattCharacteristic.PROPERTY_READ to "READ",
-                        BluetoothGattCharacteristic.PROPERTY_WRITE to "WRITE(잠금)",
-                        BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE to "WRITE_NR(잠금)",
+                        BluetoothGattCharacteristic.PROPERTY_WRITE to "WRITE",
+                        BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE to "WRITE_NR",
                         BluetoothGattCharacteristic.PROPERTY_NOTIFY to "NOTIFY",
                         BluetoothGattCharacteristic.PROPERTY_INDICATE to "INDICATE",
                     ).filter { p and it.first != 0 }.joinToString { it.second }
                     GattItem(index, characteristic.service.uuid.toString(), characteristic.uuid.toString(), names, p and BluetoothGattCharacteristic.PROPERTY_READ != 0)
                 }
                 connected = true
-                status = "진단 연결 · ${connection.services.size}개 서비스 · 제어 잠금"
-                log("GATT 탐색 완료. 센서 값은 아직 해석하지 않습니다.")
+                uart = connection.getService(SERVICE)?.getCharacteristic(UART)
+                if (uart == null) {
+                    status = "연결됨 · FFE0/FFE1 UART 없음 · 제어 잠금"
+                    log("GATT 탐색 완료. FFE1 특성이 없어 MSP 통신을 하지 않습니다.")
+                } else {
+                    status = "연결됨 · UART 알림 설정 중"
+                    connection.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                    enqueue(Op(-1, null))
+                }
+            }
+            override fun onDescriptorWrite(connection: BluetoothGatt, descriptor: BluetoothGattDescriptor, result: Int) = update(connection) {
+                opFinished()
+                if (result != BluetoothGatt.GATT_SUCCESS) { status = "알림 설정 실패: GATT $result"; return@update }
+                uartReady = true
+                status = "연결됨 · 상태 수신 대기 · 조종 송신 꺼짐"
+                handler.removeCallbacks(telemetryTick)
+                handler.post(telemetryTick)
+            }
+            override fun onCharacteristicWrite(connection: BluetoothGatt, characteristic: BluetoothGattCharacteristic, result: Int) = update(connection) {
+                opFinished()
+                if (result != BluetoothGatt.GATT_SUCCESS) log("쓰기 실패: GATT $result")
+            }
+            override fun onCharacteristicChanged(connection: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) = update(connection) {
+                received(value)
+            }
+            @Deprecated("API 31/32 callback")
+            override fun onCharacteristicChanged(connection: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+                if (Build.VERSION.SDK_INT < 33) { val copy = characteristic.value?.copyOf() ?: byteArrayOf(); update(connection) { received(copy) } }
             }
             override fun onCharacteristicRead(connection: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray, result: Int) = update(connection) {
                 readResult(characteristic, value, result)
@@ -159,7 +238,7 @@ class DroneBleClient(private val context: Context) {
     }
 
     fun read(id: Int) = safely {
-        if (!connected || reading || !hasPermissions() || items.none { it.id == id && it.readable }) return@safely
+        if (!connected || reading || opBusy || !hasPermissions() || items.none { it.id == id && it.readable }) return@safely
         val characteristic = characteristics.getOrNull(id) ?: return@safely
         reading = true
         val token = ++readGeneration
@@ -173,15 +252,141 @@ class DroneBleClient(private val context: Context) {
     private fun readResult(characteristic: BluetoothGattCharacteristic, value: ByteArray, result: Int) {
         reading = false
         readGeneration++
+        handler.post { pump() }
         if (result == BluetoothGatt.GATT_SUCCESS) {
             val hex = value.take(128).joinToString(" ") { "%02X".format(it.toInt() and 0xff) }
             log("${characteristic.uuid}: $hex${if (value.size > 128) " … (${value.size} bytes)" else ""}")
         } else log("읽기 실패: GATT $result")
     }
 
+    /** Read-only configuration requests: RC tuning, mode boxes, board status, received rcData. */
+    fun readConfig() {
+        if (!uartReady) return
+        listOf(Msp.RC_TUNING, Msp.BOX, Msp.STATUS, Msp.RC).forEach { enqueue(Op(it, Msp.request(it))) }
+    }
+
+    /** Stream RC150 frames. Only for a link whose 199 reply identifies this project's guarded firmware. */
+    fun setControl(enabled: Boolean) {
+        if (!enabled) { controlEnabled = false; ops.removeAll { it.command == Msp.RC_COMPACT }; status = "조종 송신 꺼짐"; return }
+        val t = telemetry
+        when {
+            !uartReady -> status = "UART 연결 필요"
+            t == null || (telemetryAgeMs ?: Long.MAX_VALUE) > 1000 -> status = "드론 상태(199) 응답 없음 · 조종 잠금"
+            !t.controlFirmware -> status = "펌웨어 ID ${t.firmwareId} · 보호 펌웨어(231) 아님 · 조종 잠금"
+            else -> {
+                controlEnabled = true; framesSinceEnable = 0
+                status = "조종 송신 중 · DISARMED"
+                handler.removeCallbacks(controlTick)
+                handler.post(controlTick)
+            }
+        }
+    }
+
+    fun canArm(): Boolean {
+        val t = telemetry ?: return false
+        return controlEnabled && framesSinceEnable >= 6 && sticks().throttle == 0f && t.controlFirmware && !t.armed &&
+            (telemetryAgeMs ?: Long.MAX_VALUE) <= 600
+    }
+
+    fun arm() {
+        if (!canArm()) { status = "시동 조건 미충족 · 스로틀 0·송신 0.3초·상태 수신 필요"; return }
+        ops.addFirst(Op(Msp.ARM, Msp.request(Msp.ARM)))
+        log("ARM 151 요청 (MCU가 최근 RC·최저 스로틀·I2C 오류 0을 다시 검사)")
+        pump()
+    }
+
+    fun disarm() {
+        if (!uartReady) return
+        ops.removeAll { it.command == Msp.RC_COMPACT }
+        ops.addFirst(Op(Msp.DISARM, Msp.request(Msp.DISARM)))
+        log("DISARM 152 요청")
+        pump()
+    }
+
+    /** DISARM twice, then stop the RC stream so the MCU link watchdog cuts outputs even if 152 is lost. */
+    fun emergencyStop() {
+        controlEnabled = false
+        if (uartReady) {
+            ops.clear()
+            repeat(2) { ops.addLast(Op(Msp.DISARM, Msp.request(Msp.DISARM))) }
+            pump()
+        }
+        status = "긴급 정지 · 송신 중단"
+        log("긴급 정지: DISARM x2 + RC 송신 중단")
+    }
+
+    private fun enqueue(op: Op) { ops.addLast(op); pump() }
+
+    private fun pump(): Unit = safely {
+        val connection = gatt ?: return@safely
+        val target = uart ?: return@safely
+        if (opBusy || reading || ops.isEmpty()) return@safely
+        val op = ops.removeFirst()
+        val started = if (op.bytes == null) {
+            connection.setCharacteristicNotification(target, true)
+            val cccd = target.getDescriptor(CCCD)
+            when {
+                cccd == null -> false
+                Build.VERSION.SDK_INT >= 33 -> connection.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothStatusCodes.SUCCESS
+                else -> @Suppress("DEPRECATION") run { cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE; connection.writeDescriptor(cccd) }
+            }
+        } else {
+            val type = if (target.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            if (Build.VERSION.SDK_INT >= 33) connection.writeCharacteristic(target, op.bytes, type) == BluetoothStatusCodes.SUCCESS
+            else @Suppress("DEPRECATION") run { target.writeType = type; target.value = op.bytes; connection.writeCharacteristic(target) }
+        }
+        if (!started) {
+            if (op.bytes == null) { status = "알림 설정 시작 실패 · 제어 잠금"; return@safely }
+            ops.addFirst(op)  // stack busy: retry on the next tick
+            handler.postDelayed({ pump() }, 20)
+            return@safely
+        }
+        opBusy = true
+        if (op.command == Msp.RC_COMPACT) { framesSent++; framesSinceEnable++ }
+        if (op.command != Msp.RC_COMPACT || framesSent % 20 == 0) Log.i(TAG, "tx ${op.command}: ${op.bytes?.let(Msp::hex) ?: "CCCD"}")
+        val token = ++opToken
+        handler.postDelayed({ if (token == opToken && opBusy) disconnect("GATT 쓰기 시간 초과 · 연결 종료") }, 1500)
+    }
+
+    private fun opFinished() { opBusy = false; opToken++; pump() }
+
+    private fun received(value: ByteArray) {
+        for (frame in parser.feed(value)) {
+            val raw = Msp.hex(frame.payload)
+            val air = AirStatus.decode(frame)
+            if (air != null) {
+                val previous = telemetry
+                if (previous == null || previous.armed != air.armed || previous.firmwareId != air.firmwareId || ++airCount % 25 == 0)
+                    Log.i(TAG, "rx 199: $raw → armed=${air.armed} fw=${air.firmwareId} roll=${air.rollDeci} pitch=${air.pitchDeci}")
+                telemetry = air; telemetryAt = SystemClock.elapsedRealtime(); telemetryAgeMs = 0
+                if (controlEnabled) status = "조종 송신 중 · ${if (air.armed) "ARMED" else "DISARMED"}"
+                continue
+            }
+            val text = RcTuning.decode(frame)?.toString() ?: BoardStatus.decode(frame)?.toString()
+                ?: decodeUint16List(frame, Msp.BOX)?.let { "BOX ${it.joinToString { v -> "0x%03X".format(v) }}" }
+                ?: decodeUint16List(frame, Msp.RC)?.let { "RC $it" }
+                ?: "cmd ${frame.command}${if (frame.error) " 오류 응답" else ""}"
+            config = (config.lines().filter { it.isNotBlank() && !it.startsWith("${frame.command}:") } + "${frame.command}: $text").joinToString("\n")
+            log("rx ${frame.command}: $raw → $text")
+            Log.i(TAG, "rx ${frame.command}${if (frame.error) "!" else ""}: $raw → $text")
+        }
+    }
+
     fun disconnect(reason: String = "연결 해제 · 제어 송신 잠금") {
         generation++
         readGeneration++
+        controlEnabled = false
+        uartReady = false
+        uart = null
+        ops.clear()
+        opBusy = false
+        opToken++
+        telemetry = null
+        telemetryAt = 0L
+        telemetryAgeMs = null
+        handler.removeCallbacks(telemetryTick)
+        handler.removeCallbacks(controlTick)
         stopScan()
         val old = gatt
         gatt = null

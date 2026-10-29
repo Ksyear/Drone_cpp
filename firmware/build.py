@@ -16,7 +16,14 @@ def convert(source: str) -> str:
         "evaluateCommand();  // we got a valid packet": "evaluateCommand(dataSize[CURRENTPORT]);  // we got a valid packet",
         "void evaluateCommand() {": "void evaluateCommand(uint8_t payloadSize) {\n  if (!validControlPayload(cmdMSP[CURRENTPORT], payloadSize)) return;",
         "   case MSP_SET_RAW_RC_SERIAL:\n": "   case MSP_SET_RAW_RC_SERIAL:\n     serialArmGuard.rcReceived(millis());\n",
-        "   case MSP_ARM:\n     go_arm();": "   case MSP_ARM:\n     if (serialArmGuard.allows(serialRcValue[THROTTLE], millis())) go_arm();",
+        "   case MSP_ARM:\n     go_arm();":
+            "   case MSP_ARM:\n     if (serialArmGuard.allows(serialRcValue[THROTTLE], millis(), i2c_errors_count)) go_arm();",
+        # immediate stop: legacy go_disarm() blocks 200 ms with motors still driven
+        "   case MSP_DISARM:\n     go_disarm();": "   case MSP_DISARM:\n     f.ARMED = 0; flightState &= 0x7f;",
+        # first statement, ahead of serialCom()'s early return on a full TX buffer
+        "void serialCom() {\n":
+            "void serialCom() {\n  if (f.ARMED && serialArmGuard.mustCut(millis(), i2c_errors_count)) { f.ARMED = 0; flightState &= 0x7f; }\n",
+        "     serialize16(100); //version": "     serialize16(SerialArmGuard::kFirmwareId); //version",
     }
     for old, new in replacements.items():
         if source.count(old) != 1:

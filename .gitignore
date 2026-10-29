@@ -13,3 +13,4 @@ RB022_AIRCOPTER_GEAR_TYPE/
 .tools/
 evidence/
 tmp/
+firmware/BleNameCpp/BleName.local.hpp

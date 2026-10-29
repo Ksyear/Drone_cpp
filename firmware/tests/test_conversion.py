@@ -11,14 +11,19 @@ class ConversionTest(unittest.TestCase):
     def test_guard_and_facade(self):
         source = ('#line 1 "/original/AirCopter.ino"\nvoid evaluateCommand();\n'
                   'evaluateCommand();  // we got a valid packet\nvoid evaluateCommand() {\n'
-                  '   case MSP_SET_RAW_RC_SERIAL:\n   case MSP_ARM:\n     go_arm();\n}\n')
+                  '   case MSP_SET_RAW_RC_SERIAL:\n   case MSP_ARM:\n     go_arm();\n   case MSP_DISARM:\n     go_disarm();\n'
+                  'void serialCom() {\n}\n     serialize16(100); //version\n}\n')
         result = build.convert(source)
         self.assertIn('evaluateCommand(dataSize[CURRENTPORT])', result)
         self.assertIn('if (!validControlPayload(cmdMSP[CURRENTPORT], payloadSize)) return;', result)
         self.assertIn('void setup() { FlightController::begin(); }', result)
         self.assertIn('#line 1 "AirCopter.ino"', result)
         self.assertIn('serialArmGuard.rcReceived(millis());', result)
-        self.assertIn('if (serialArmGuard.allows(serialRcValue[THROTTLE], millis())) go_arm();', result)
+        self.assertIn('if (serialArmGuard.allows(serialRcValue[THROTTLE], millis(), i2c_errors_count)) go_arm();', result)
+        self.assertIn('case MSP_DISARM:\n     f.ARMED = 0; flightState &= 0x7f;', result)
+        self.assertIn('serialArmGuard.mustCut(millis(), i2c_errors_count)) { f.ARMED = 0;', result)
+        self.assertIn('serialize16(SerialArmGuard::kFirmwareId); //version', result)
+        self.assertNotIn('go_disarm();', result)
         self.assertIn('static SerialArmGuard serialArmGuard;', result)
 
     def test_unexpected_source_is_rejected(self):
