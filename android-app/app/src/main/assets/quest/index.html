@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RB022 Mission</title>
+<style>
+:root{--bg:#090e14;--panel:#121b25;--line:#263543;--muted:#8d9eaf;--accent:#66e3cc;--coral:#ff646e;--amber:#ffc46b;--text:#edf4fa}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
+header b{letter-spacing:2px}
+.chip{padding:6px 10px;border:1px solid var(--line);border-radius:10px;font:12px ui-monospace,monospace;color:var(--muted)}
+.chip.ok{color:var(--accent);border-color:var(--accent)}
+.chip.bad{color:var(--coral);border-color:var(--coral)}
+main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:16px;padding:16px 20px}
+@media (max-width:900px){main{grid-template-columns:1fr}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:14px}
+h2{margin:0 0 10px;font-size:13px;letter-spacing:1px;color:var(--muted);font-weight:600}
+#video{width:100%;aspect-ratio:4/3;background:#0c141d;border-radius:12px;object-fit:contain;display:block}
+#video:not([src]){visibility:hidden}
+#map{width:100%;aspect-ratio:1/1;background:#0b121a;border-radius:12px;touch-action:none;display:block;cursor:crosshair}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}
+button{min-height:52px;min-width:110px;padding:0 18px;border-radius:14px;border:1px solid var(--line);background:#182532;color:var(--text);font-size:16px;font-weight:600}
+button.primary{background:var(--accent);color:var(--bg);border-color:var(--accent)}
+button.danger{border-color:var(--coral);color:var(--coral)}
+button:disabled{opacity:.35}
+input[type=range]{flex:1;min-width:180px;height:40px;accent-color:var(--accent)}
+input[type=text]{font-size:28px;letter-spacing:8px;width:220px;padding:10px;border-radius:12px;border:1px solid var(--line);background:#0b121a;color:var(--text);text-align:center}
+dl{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font:13px ui-monospace,monospace}
+dt{color:var(--muted)}dd{margin:0}
+.note{color:var(--muted);font-size:12px;margin-top:10px}
+#pair{max-width:520px;margin:60px auto}
+.hidden{display:none}
+.msg{min-height:20px;margin-top:8px;font-size:13px;color:var(--amber)}
+</style>
+</head>
+<body>
+<header><b>RB022 MISSION</b><span class="chip" id="link">LINK —</span><span class="chip" id="pose">POSE —</span><span class="chip bad">SIMULATION · 실기 출력 잠금</span></header>
+<div id="pair"><section>
+<h2>휴대폰 앱에 표시된 6자리 코드</h2>
+<input type="text" id="code" inputmode="numeric" maxlength="6" autocomplete="off">
+<div class="row"><button class="primary" id="pairBtn">연결</button></div>
+<div class="msg" id="pairMsg"></div>
+<p class="note">이 화면은 휴대폰 중계 서버에서 열립니다. 목표 지정은 실제 기체를 움직이지 않고 가상 드론 시뮬레이션만 구동합니다.</p>
+</section></div>
+<main id="app" class="hidden">
+<section>
+<h2>카메라 (휴대폰 중계)</h2>
+<img id="video" alt="휴대폰이 받은 ESP32-CAM 영상 중계">
+<div class="row"><button id="videoBtn">영상 켜기</button><span class="chip" id="videoAge">VIDEO —</span></div>
+<dl style="margin-top:14px">
+<dt>상태</dt><dd id="state">—</dd>
+<dt>사유</dt><dd id="reason">—</dd>
+<dt>위치원</dt><dd id="source">—</dd>
+<dt>현재 W</dt><dd id="poseW">—</dd>
+<dt>목표 W</dt><dd id="goalW">—</dd>
+<dt>남은 거리</dt><dd id="remain">—</dd>
+<dt>정렬</dt><dd id="align">없음 (W 평면도 직접 지정)</dd>
+<dt>RC150 예시</dt><dd id="rc">—</dd>
+<dt>실기 잠금</dt><dd id="locks">—</dd>
+</dl>
+</section>
+<section>
+<h2>목표 선택 · W 좌표 평면도 (위가 +Y, 오른쪽이 +X, 격자 0.5 m)</h2>
+<canvas id="map" width="800" height="800" aria-label="평면도에서 목표점을 누르세요"></canvas>
+<div class="row"><span>고도</span><input type="range" id="alt" min="0.3" max="1.5" step="0.05" value="0.8"><span class="chip" id="altVal">0.80 m</span></div>
+<div class="row">
+<button id="sendBtn" disabled>목표 전송</button>
+<button class="primary" id="execBtn" disabled>실행</button>
+<button class="danger" id="cancelBtn" disabled>취소</button>
+<button id="landBtn" disabled>착륙</button>
+</div>
+<div class="msg" id="msg"></div>
+<p class="note">평면도를 눌러도 바로 움직이지 않습니다. 목표 전송 → 수신 확인 → 실행 순서입니다. 도착하면 호버링하며 착륙은 사용자가 누릅니다.</p>
+</section>
+</main>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let session = null, seq = 0, state = null, draft = null, goalCounter = 0, fails = 0, sentGoalId = null;
+const map = $("map"), ctx = map.getContext("2d");
+
+async function api(path, body) {
+  const headers = {"Content-Type": "application/json"};
+  if (session) headers["X-RB022-Session"] = session; else headers["X-RB022-Client"] = "quest-web";
+  const res = await fetch(path, body ? {method: "POST", headers, body: JSON.stringify(body)} : {headers});
+  return [res.status, await res.json()];
+}
+
+async function command(type, extra) {
+  const [code, r] = await api("/api/command", Object.assign({v: 1, session, seq: ++seq, type}, extra || {}));
+  if (code === 401) { logout("세션이 만료되었습니다. 다시 연결하세요"); return null; }
+  $("msg").textContent = r.ok ? `${type}: 수신 확인 (${r.state})` : `${type}: 거절 — ${r.reason}`;
+  return r;
+}
+
+function logout(text) { session = null; $("app").classList.add("hidden"); $("pair").classList.remove("hidden"); $("pairMsg").textContent = text; $("video").removeAttribute("src"); }
+
+$("pairBtn").onclick = async () => {
+  try {
+    const [, r] = await api("/api/hello", {v: 1, type: "hello", code: $("code").value.trim()});
+    if (!r.ok) { $("pairMsg").textContent = "연결 실패: " + r.reason; return; }
+    session = r.session; seq = 0;
+    $("pair").classList.add("hidden"); $("app").classList.remove("hidden");
+  } catch (e) { $("pairMsg").textContent = "휴대폰 서버에 연결할 수 없습니다"; }
+};
+
+$("videoBtn").onclick = () => {
+  const v = $("video");
+  if (v.getAttribute("src")) { v.removeAttribute("src"); $("videoBtn").textContent = "영상 켜기"; }
+  else { v.src = "/stream?s=" + encodeURIComponent(session); $("videoBtn").textContent = "영상 끄기"; }
+};
+
+$("alt").oninput = () => { $("altVal").textContent = Number($("alt").value).toFixed(2) + " m"; render(); };
+
+function view() {
+  const f = state ? state.fence : {min: [-2, -2, 0], max: [2, 2, 1.5]};
+  const pad = 0.3, w = f.max[0] - f.min[0] + 2 * pad, h = f.max[1] - f.min[1] + 2 * pad;
+  const s = Math.min(map.width / w, map.height / h);
+  return {f, s, ox: (map.width - (f.max[0] - f.min[0]) * s) / 2 - f.min[0] * s, oy: (map.height + (f.max[1] - f.min[1]) * s) / 2 + f.min[1] * s};
+}
+const toPx = (v, p) => [v.ox + p[0] * v.s, v.oy - p[1] * v.s];
+
+map.onclick = ev => {
+  if (!state) return;
+  const r = map.getBoundingClientRect(), v = view();
+  const x = ((ev.clientX - r.left) * map.width / r.width - v.ox) / v.s;
+  const y = (v.oy - (ev.clientY - r.top) * map.height / r.height) / v.s;
+  if (x < v.f.min[0] || x > v.f.max[0] || y < v.f.min[1] || y > v.f.max[1]) { $("msg").textContent = "허용 영역 밖입니다"; return; }
+  draft = [Math.round(x * 100) / 100, Math.round(y * 100) / 100];
+  $("msg").textContent = `초안 목표 (${draft[0]}, ${draft[1]}) — 아직 전송하지 않았습니다`;
+  render(); buttons();
+};
+
+$("sendBtn").onclick = async () => {
+  const id = "g" + (++goalCounter) + "-" + Date.now().toString(36);
+  const r = await command("goal", {goalId: id, frame: "W", position: [draft[0], draft[1], Number($("alt").value)], arrival: "hover"});
+  if (r && r.ok) sentGoalId = id;
+};
+$("execBtn").onclick = () => command("execute", {goalId: state.goalId});
+$("cancelBtn").onclick = () => command("cancel", {goalId: state.goalId});
+$("landBtn").onclick = () => command("land");
+
+function buttons() {
+  const st = state ? state.state : "";
+  $("sendBtn").disabled = !draft || !["IDLE", "PENDING", "ARRIVED", "CANCELLED"].includes(st);
+  $("execBtn").disabled = !(st === "PENDING" && state.goalId === sentGoalId && state.pose && state.pose.valid);
+  $("cancelBtn").disabled = !["PENDING", "EXECUTING"].includes(st);
+  $("landBtn").disabled = !["ARRIVED", "CANCELLED", "FAULT"].includes(st);
+}
+
+const fmt = p => p ? p.map(n => n.toFixed(2)).join(", ") + " m" : "—";
+
+function render() {
+  const v = view();
+  ctx.clearRect(0, 0, map.width, map.height);
+  ctx.strokeStyle = "#192733"; ctx.lineWidth = 1;
+  for (let x = Math.ceil(v.f.min[0] * 2) / 2; x <= v.f.max[0] + 1e-9; x += 0.5) { const [a] = toPx(v, [x, 0]); ctx.beginPath(); ctx.moveTo(a, toPx(v, [0, v.f.min[1]])[1]); ctx.lineTo(a, toPx(v, [0, v.f.max[1]])[1]); ctx.stroke(); }
+  for (let y = Math.ceil(v.f.min[1] * 2) / 2; y <= v.f.max[1] + 1e-9; y += 0.5) { const b = toPx(v, [0, y])[1]; ctx.beginPath(); ctx.moveTo(toPx(v, [v.f.min[0], 0])[0], b); ctx.lineTo(toPx(v, [v.f.max[0], 0])[0], b); ctx.stroke(); }
+  const [x0, y0] = toPx(v, [v.f.min[0], v.f.max[1]]), [x1, y1] = toPx(v, [v.f.max[0], v.f.min[1]]);
+  ctx.strokeStyle = "#ff646e"; ctx.setLineDash([10, 8]); ctx.strokeRect(x0, y0, x1 - x0, y1 - y0); ctx.setLineDash([]);
+  const [cx, cy] = toPx(v, [0, 0]); ctx.strokeStyle = "#8d9eaf"; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + 40, cy); ctx.moveTo(cx, cy); ctx.lineTo(cx, cy - 40); ctx.stroke();
+  ctx.fillStyle = "#8d9eaf"; ctx.font = "20px monospace"; ctx.fillText("+X", cx + 44, cy + 6); ctx.fillText("+Y", cx - 14, cy - 46);
+  if (state && state.path.length > 1) {
+    ctx.strokeStyle = "#66e3cc"; ctx.lineWidth = 3; ctx.setLineDash([6, 6]); ctx.beginPath();
+    state.path.forEach((p, i) => { const [a, b] = toPx(v, p); i ? ctx.lineTo(a, b) : ctx.moveTo(a, b); }); ctx.stroke(); ctx.setLineDash([]);
+  }
+  if (state && state.goal) { const [a, b] = toPx(v, state.goal); ctx.strokeStyle = "#66e3cc"; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(a, b, 18, 0, 7); ctx.stroke(); }
+  if (draft) { const [a, b] = toPx(v, draft); ctx.strokeStyle = "#ffc46b"; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(a - 14, b); ctx.lineTo(a + 14, b); ctx.moveTo(a, b - 14); ctx.lineTo(a, b + 14); ctx.stroke(); }
+  if (state && state.external) { const [a, b] = toPx(v, state.external.w); ctx.strokeStyle = "#8d9eaf"; ctx.lineWidth = 2; ctx.strokeRect(a - 10, b - 10, 20, 20); }
+  if (state && state.pose) {
+    const [a, b] = toPx(v, state.pose.w); ctx.fillStyle = state.pose.valid ? "#66e3cc" : "#ff646e";
+    ctx.beginPath(); ctx.arc(a, b, 11, 0, 7); ctx.fill();
+    ctx.fillStyle = "#edf4fa"; ctx.fillText(`SIM z=${state.pose.w[2].toFixed(2)}`, a + 16, b - 12);
+  }
+}
+
+function show(s) {
+  state = s;
+  $("state").textContent = s.state; $("reason").textContent = s.reason || "—";
+  $("source").textContent = s.pose ? `${s.pose.source} · ${s.pose.ageMs} ms · σ ${s.pose.sigma} m` : "없음";
+  $("poseW").textContent = s.pose ? fmt(s.pose.w) : "—"; $("goalW").textContent = fmt(s.goal);
+  $("remain").textContent = s.remaining == null ? "—" : s.remaining.toFixed(2) + " m";
+  $("align").textContent = s.alignment ? `${s.alignment.id} · RMS ${s.alignment.rms} m` : "없음 (W 평면도 직접 지정)";
+  $("rc").textContent = s.rcPreview ? s.rcPreview.join(" ") + " (전송 안 함)" : "—";
+  $("locks").textContent = s.realOutputLocked.join(", ");
+  $("pose").textContent = s.pose && s.pose.valid ? "POSE OK" : "POSE INVALID"; $("pose").className = "chip " + (s.pose && s.pose.valid ? "ok" : "bad");
+  $("videoAge").textContent = s.videoAgeMs == null ? "VIDEO 없음" : `VIDEO 수신 후 ${s.videoAgeMs} ms`;
+  $("alt").min = s.altitude[0]; $("alt").max = s.altitude[1];
+  render(); buttons();
+}
+
+async function poll() {
+  if (session) {
+    try {
+      const [code, s] = await api("/api/state");
+      if (code === 401) logout("세션이 만료되었습니다. 다시 연결하세요");
+      else { fails = 0; show(s); $("link").textContent = "LINK OK"; $("link").className = "chip ok"; }
+    } catch (e) {
+      if (++fails >= 3) { $("link").textContent = "LINK LOST"; $("link").className = "chip bad"; }
+    }
+  }
+  setTimeout(poll, 200);
+}
+poll(); render();
+</script>
+</body>
+</html>

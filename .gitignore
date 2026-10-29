@@ -1,0 +1,15 @@
+.DS_Store
+._*
+**/build/
+**/.gradle/
+**/__pycache__/
+android-app/local.properties
+firmware/AirCameraCpp/CameraSecrets.hpp
+firmware/AirCameraCpp/connection.local.txt
+firmware/AirCopterCpp/
+firmware/backups/
+RB022_AIRCOPTER_GEAR_TYPE/
+*.zip
+.tools/
+evidence/
+tmp/
