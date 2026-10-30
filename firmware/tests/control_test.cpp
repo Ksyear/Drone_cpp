@@ -1,14 +1,17 @@
 #include "ControlPayload.hpp"
 #include "FlightController.hpp"
 #include "ArmGuard.hpp"
+#include "AltitudeHold.hpp"
 #include <cassert>
 
 static int starts = 0;
 static int updates = 0;
 static int opticalBegins = 0;
 static int opticalPolls = 0;
+static int holdSteps = 0;
 void legacySetup() { ++starts; }
 void legacyLoop() { ++updates; }
+void altitudeHoldStep() { assert(opticalPolls == holdSteps + 1); ++holdSteps; }  // after the sensor poll
 namespace Optical {
 void begin() { assert(starts == 1); ++opticalBegins; }  // after legacySetup has started I2C
 void poll() { assert(updates == opticalPolls + 1); ++opticalPolls; }
@@ -27,7 +30,7 @@ int main() {
     FlightController::begin();
     FlightController::update();
     FlightController::update();
-    assert(starts == 1 && updates == 2 && opticalBegins == 1 && opticalPolls == 2);
+    assert(starts == 1 && updates == 2 && opticalBegins == 1 && opticalPolls == 2 && holdSteps == 2);
 
     // VL53L0X result block: device status in bits 6..3 of byte 0, range big-endian at bytes 10..11
     uint8_t result[12] = {11 << 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04, 0xD2};
@@ -50,6 +53,58 @@ int main() {
     assert(Optical::encodeTimeout(0) == 0 && Optical::decodeTimeout(0x0102) == 5);
     assert(Optical::macroPeriodNs(14) == 53384);                 // (2304 * 14 * 1655 + 500) / 1000
     assert(Optical::usToMclks(1000, 14) == 19 && Optical::mclksToUs(19, 14) == 1014);
+
+    // height hold: off unless AUX2 asks for it; idle whenever it cannot run
+    AltitudeHold hold;
+    assert(!hold.requested() && hold.throttle(1234) == 1234);
+    hold.command(0x05, 30);                                     // app default AUX byte: no hold bit
+    assert(!hold.requested() && hold.throttle(1120) == 1120);
+    hold.command(0x15, 200);                                    // AUX2 = 1500: hold, target clipped to 120 cm
+    assert(hold.requested());
+    hold.update(false, true, 24, 1, 0);                         // disarmed
+    assert(hold.throttle(0) == AltitudeHold::kIdleUs);
+    hold.update(true, false, 24, 2, 10);                        // no range finder
+    assert(hold.throttle(0) == AltitudeHold::kIdleUs);
+    hold.command(0x15, 0);
+    hold.update(true, true, 24, 3, 20);                         // armed on the ground, target 0
+    assert(hold.throttle(0) == AltitudeHold::kIdleUs && !hold.engaged());
+    // take-off to 40 cm from 2.4 cm: from the low clamp, rising, never faster than the slew limit
+    hold.command(0x15, 40);
+    uint32_t t = 20;
+    uint8_t sample = 3;
+    uint16_t last = 0;
+    for (int i = 0; i < 40; ++i) {
+        t += 33;
+        hold.update(true, true, 24, ++sample, t);
+        uint16_t out = hold.throttle(0);
+        assert(out >= AltitudeHold::kMinUs && out <= AltitudeHold::kMaxUs);
+        assert(last == 0 || (out >= last && out - last <= 21));  // 600 us/s over 33 ms
+        last = out;
+    }
+    assert(hold.engaged() && last > 1700);
+    // at the target and still: settles near the hover guess
+    AltitudeHold level;
+    level.command(0x15, 40);
+    t = 0; sample = 0;
+    for (int i = 0; i < 60; ++i) { t += 33; level.update(true, true, 400, ++sample, t); }
+    uint16_t settled = level.throttle(0);
+    assert(settled > 1480 && settled < 1520);
+    // climbing through the target: the speed term pulls the output below the still value
+    AltitudeHold rising = level;
+    for (int i = 0; i < 5; ++i) { t += 33; rising.update(true, true, 400 + 15 * (i + 1), ++sample, t); }
+    assert(rising.throttle(0) < settled);
+    // range lost for longer than 300 ms: slow descent from the hover estimate, never a jump
+    AltitudeHold lost = level;
+    uint32_t tl = t;
+    uint8_t sl = sample;
+    uint16_t before = lost.throttle(0);
+    for (int i = 0; i < 30; ++i) { tl += 33; lost.update(true, true, 0, ++sl, tl); }
+    uint16_t after = lost.throttle(0);
+    assert(after < before && before - after <= 70 && after >= AltitudeHold::kMinUs);
+    // landing: zero target at ground height idles the motors
+    level.command(0x15, 0);
+    t += 33; level.update(true, true, 60, ++sample, t);
+    assert(level.throttle(0) == AltitudeHold::kIdleUs && !level.engaged());
 
     SerialArmGuard guard;
     assert(!guard.allows(1000, 0, 0) && guard.mustCut(0, 0));   // no RC frame yet

@@ -111,5 +111,7 @@ data class Rc150(val roll: Int, val pitch: Int, val yaw: Int, val throttle: Int,
 
         /** AUX3/AUX4 mid (0x05); default EEPROM enables HORIZON for any AUX1 position. */
         const val AUX_DEFAULT = 0b0000_0101
+        /** AUX2 mid on top: firmware 232 height hold, the throttle byte is then the target height in cm. */
+        const val AUX_HOLD = AUX_DEFAULT or 0b0001_0000
     }
 }

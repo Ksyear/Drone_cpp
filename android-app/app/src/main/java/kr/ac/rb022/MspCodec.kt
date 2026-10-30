@@ -19,8 +19,9 @@ object Msp {
     const val AIR = 199
     /** Level reference from the current pose, saved to EEPROM; the firmware ignores it while ARMED. */
     const val ACC_CALIBRATION = 205
-    /** Value of the 199 "version" field in this project's derived firmware (firmware/ArmGuard.hpp). */
+    /** 199 "version" of this project's protective firmware (firmware/ArmGuard.hpp); 232 adds the height hold. */
     const val CONTROL_FIRMWARE_ID = 231
+    const val HOLD_FIRMWARE_ID = 232
 
     fun request(command: Int, payload: ByteArray = ByteArray(0)): ByteArray {
         require(command in 0..255 && payload.size <= 64)
@@ -77,7 +78,9 @@ class MspParser {
 data class AirStatus(val flightState: Int, val firmwareId: Int, val estAlt: Int, val rollDeci: Int, val pitchDeci: Int,
                      val altHold: Int, val vbatRaw: Int, val trimPitch: Int, val trimRoll: Int) {
     val armed get() = flightState and 0x80 != 0
-    val controlFirmware get() = firmwareId == Msp.CONTROL_FIRMWARE_ID
+    val controlFirmware get() = firmwareId == Msp.CONTROL_FIRMWARE_ID || firmwareId == Msp.HOLD_FIRMWARE_ID
+    /** Only 232 reads the throttle byte as a target height while AUX2 is set; 231 would take it as throttle. */
+    val holdFirmware get() = firmwareId == Msp.HOLD_FIRMWARE_ID
     /**
      * Estimate only: firmware vbat = 16*ADC/VBATSCALE(64) = ADC/4 against a 5 V reference, which matches the kit's
      * own thresholds 179/184/189 = 3.5/3.6/3.7 V. Meaningless on USB power alone (pin floats near 35).
@@ -90,15 +93,18 @@ data class AirStatus(val flightState: Int, val firmwareId: Int, val estAlt: Int,
     }
 }
 
-/** MSP 198: status bits (1 range sensor found, 2 flow sensor found, 4 range valid), height mm, flow counts, SQUAL. */
-data class OpticalStatus(val status: Int, val heightMm: Int, val flowX: Int, val flowY: Int, val quality: Int) {
+/**
+ * MSP 198: status bits (1 range sensor found, 2 flow sensor found, 4 range valid), height mm, flow counts, SQUAL,
+ * and from firmware 232 the height hold output in rcData us (0 when not holding).
+ */
+data class OpticalStatus(val status: Int, val heightMm: Int, val flowX: Int, val flowY: Int, val quality: Int, val holdUs: Int = 0) {
     val rangeFound get() = status and 1 != 0
     val flowFound get() = status and 2 != 0
     val rangeValid get() = status and 4 != 0
 
     companion object {
-        fun decode(f: MspFrame) = if (f.command != Msp.OPTICAL || f.error || f.payload.size != 8) null else
-            OpticalStatus(f.byte(0), f.u16(1), f.s16(3), f.s16(5), f.byte(7))
+        fun decode(f: MspFrame) = if (f.command != Msp.OPTICAL || f.error || (f.payload.size != 8 && f.payload.size != 10)) null else
+            OpticalStatus(f.byte(0), f.u16(1), f.s16(3), f.s16(5), f.byte(7), if (f.payload.size == 10) f.u16(8) else 0)
     }
 }
 

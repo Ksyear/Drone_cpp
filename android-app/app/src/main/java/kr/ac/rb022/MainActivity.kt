@@ -60,6 +60,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var ble: DroneBleClient
     private lateinit var camera: CameraClient
     private lateinit var altitude: AltitudeThrottle
+    private val heightTarget = HeightTarget()
+    /** Latched at take-off: the firmware height hold flies this flight (firmware 232, valid range, full output). */
+    private var holdFlight by mutableStateOf(false)
     private var preview by mutableStateOf(ControlPreview())
     private var hub: MissionHub? = null
     private var mission by mutableStateOf<MissionLink?>(null)
@@ -83,11 +86,15 @@ class MainActivity : ComponentActivity() {
                 var address by rememberSaveable { mutableStateOf(preferences.getString("stream", "") ?: "") }
                 LaunchedEffect(ble.connected) { if (!ble.connected) preview = ControlPreview() }
                 val armed = ble.telemetry?.armed == true
-                LaunchedEffect(armed) { if (!armed) altitude.land() }  // MCU disarm (STOP, watchdog) ends the flight
+                LaunchedEffect(armed) { if (!armed) land() }  // MCU disarm (STOP, watchdog) ends the flight
+                val optical = ble.optical
+                val holdAvailable = ble.telemetry?.holdFirmware == true && optical?.rangeValid == true && ble.throttleLimit >= 0.9f
                 LaunchedEffect(Unit) {  // the RC sender reads preview, so the time-based output lands there
                     while (true) {
-                        val out = altitude.output(SystemClock.uptimeMillis())
-                        if (out != preview.throttle) preview = preview.copy(throttle = out)
+                        val now = SystemClock.uptimeMillis()
+                        val next = if (holdFlight) preview.copy(throttle = 0f, holdCm = heightTarget.targetCm(now))
+                            else preview.copy(throttle = altitude.output(now), holdCm = null)
+                        if (next != preview) preview = next
                         delay(50)
                     }
                 }
@@ -100,25 +107,35 @@ class MainActivity : ComponentActivity() {
                 val connectDrone = { if (!ble.hasPermissions() || !ble.reconnect()) { showSettings = true; scan() } }
                 Surface(Modifier.fillMaxSize(), color = Background) {
                     Row(Modifier.fillMaxSize().safeDrawingPadding().padding(10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        ThrottlePanel("출력 ${(minOf(preview.throttle, ble.throttleLimit) * 100).toInt()}% · 최대 ${(ble.throttleLimit * 100).toInt()}%",
-                            ble.throttleLimit < 0.3f, ble.climbSpeed, Modifier.weight(0.3f).fillMaxHeight(),
+                        val heightText = optical?.takeIf { it.rangeValid }?.let { "${it.heightMm / 10} cm" } ?: "—"
+                        ThrottlePanel(when {
+                            holdFlight -> "목표 ${preview.holdCm ?: 0} cm · 높이 $heightText"
+                            holdAvailable -> "높이 유지 준비 · 높이 $heightText"
+                            else -> "출력 ${(minOf(preview.throttle, ble.throttleLimit) * 100).toInt()}% · 최대 ${(ble.throttleLimit * 100).toInt()}%"
+                        }, ble.throttleLimit < 0.3f, ble.climbSpeed, Modifier.weight(0.3f).fillMaxHeight(),
                             onPress = { dir ->
-                                altitude.press(dir, SystemClock.uptimeMillis(), armed, AltitudeThrottle.pulseMs(ble.climbSpeed))
-                                if (altitude.airborne) ble.hoverThrottle = altitude.hover
+                                val now = SystemClock.uptimeMillis()
+                                if (!altitude.airborne && !heightTarget.airborne) holdFlight = dir > 0 && armed && holdAvailable
+                                if (holdFlight) heightTarget.press(dir, now, armed, (optical?.heightMm ?: 0) / 10f, ble.climbSpeed)
+                                else {
+                                    altitude.press(dir, now, armed, AltitudeThrottle.pulseMs(ble.climbSpeed))
+                                    if (altitude.airborne) ble.hoverThrottle = altitude.hover
+                                }
                             },
-                            onRelease = { altitude.release(SystemClock.uptimeMillis()) },
+                            onRelease = { val now = SystemClock.uptimeMillis(); if (holdFlight) heightTarget.release(now) else altitude.release(now) },
                             onSpeed = { ble.climbSpeed = it }, onYaw = { preview = preview.copy(yaw = it) })
                         Column(Modifier.weight(0.4f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             StatusBar(ble, camera, mission != null) { showSettings = true }
-                            CameraViewport(camera, ble, 1000 + 4 * preview.rc(ble.throttleLimit, ble.axisLimit).throttle,
+                            CameraViewport(camera, ble, if (holdFlight) optical?.holdUs?.takeIf { it > 0 } ?: 1000
+                                else 1000 + 4 * preview.rc(ble.throttleLimit, ble.axisLimit).throttle,
                                 Modifier.weight(1f).fillMaxWidth(), connectDrone) {
                                 camera.savedMedia?.let { uri ->
                                     runCatching { startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, camera.savedType)
                                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
                                 }
                             }
-                            ActionBar(ble, onDisarm = { altitude.land(); preview = preview.copy(throttle = 0f); ble.disarm() },
-                                onStop = { altitude.land(); preview = ControlPreview(); ble.emergencyStop() })
+                            ActionBar(ble, onDisarm = { land(); preview = preview.copy(throttle = 0f, holdCm = null); ble.disarm() },
+                                onStop = { land(); preview = ControlPreview(); ble.emergencyStop() })
                         }
                         StickPad("PITCH", "ROLL", preview.roll, -preview.pitch, "${(preview.pitch * 100).toInt()} / ${(preview.roll * 100).toInt()}",
                             Modifier.weight(0.3f).fillMaxHeight(), { x, y -> preview = preview.right(x, y) },
@@ -134,6 +151,8 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    private fun land() { altitude.land(); heightTarget.land(); holdFlight = false }
 
     private fun startMission() {
         val clock = { System.nanoTime() / 1_000_000 }
@@ -166,7 +185,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         stopMission()
-        altitude.land()
+        land()
         preview = ControlPreview()
         ble.disconnect("앱 비활성 · 연결 해제")  // RC stream stops: the MCU link watchdog cuts armed outputs
         camera.disconnect()
@@ -303,7 +322,7 @@ private fun ActionBar(ble: DroneBleClient, onDisarm: () -> Unit, onStop: () -> U
     val armed = ble.telemetry?.armed == true
     // long press turns the RC stream on by itself, so a fresh guarded DISARMED link at throttle 0 is enough
     val canArm = ble.framesSent >= 0 && (ble.canArm() || (!ble.controlEnabled && ble.uartReady && ble.telemetry?.controlFirmware == true &&
-        !armed && ble.sticks().throttle == 0f))
+        !armed && ble.sticks().idle))
     Row(Modifier.fillMaxWidth().height(64.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(14.dp))
             .background(if (canArm) Accent.copy(alpha = .22f) else Panel).border(1.dp, if (canArm) Accent else Outline, RoundedCornerShape(14.dp))
@@ -488,7 +507,7 @@ private fun DroneSettings(ble: DroneBleClient, preview: ControlPreview, onScan: 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("조종 송신", fontWeight = FontWeight.Bold)
-                    Text("보호 펌웨어(ID ${Msp.CONTROL_FIRMWARE_ID})가 응답할 때만 켜집니다. 시동 버튼을 길게 누르면 자동으로 켜집니다. 송신이 끊기면 MCU가 0.5초 안에 출력을 끊습니다.", color = Muted, fontSize = 11.sp)
+                    Text("보호 펌웨어(ID ${Msp.CONTROL_FIRMWARE_ID}·${Msp.HOLD_FIRMWARE_ID})가 응답할 때만 켜집니다. 시동 버튼을 길게 누르면 자동으로 켜집니다. 송신이 끊기면 MCU가 0.5초 안에 출력을 끊습니다.", color = Muted, fontSize = 11.sp)
                 }
                 Switch(ble.controlEnabled, { ble.setControl(it) })
             }

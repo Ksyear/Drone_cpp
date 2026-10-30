@@ -8,7 +8,7 @@ public:
     static const uint16_t kMinCheck = 1100;      // AirCopter.ino MINCHECK
     static const uint32_t kMaxRcAgeMs = 250;     // several periods of a 50-71 ms RC sender
     static const uint32_t kLinkTimeoutMs = 500;  // bench value, not flight-validated
-    static const uint16_t kFirmwareId = 231;     // MSP 199 "version" field: lets the app recognise this build
+    static const uint16_t kFirmwareId = 232;     // MSP 199 "version": 232 = 231 + height hold (AUX2 changes the throttle byte)
 
     void rcReceived(uint32_t nowMs) { lastRcMs_ = nowMs; seen_ = true; }
 

@@ -313,7 +313,7 @@ class DroneBleClient(private val context: Context) {
         when {
             !uartReady -> status = "UART 연결 필요"
             t == null || (telemetryAgeMs ?: Long.MAX_VALUE) > 1000 -> status = "드론 상태(199) 응답 없음 · 조종 잠금"
-            !t.controlFirmware -> status = "펌웨어 ID ${t.firmwareId} · 보호 펌웨어(231) 아님 · 조종 잠금"
+            !t.controlFirmware -> status = "펌웨어 ID ${t.firmwareId} · 보호 펌웨어(231/232) 아님 · 조종 잠금"
             else -> {
                 controlEnabled = true; framesSinceEnable = 0
                 status = "조종 송신 중 · DISARMED"
@@ -325,7 +325,7 @@ class DroneBleClient(private val context: Context) {
 
     fun canArm(): Boolean {
         val t = telemetry ?: return false
-        return controlEnabled && framesSinceEnable >= 6 && sticks().throttle == 0f && t.controlFirmware && !t.armed &&
+        return controlEnabled && framesSinceEnable >= 6 && sticks().idle && t.controlFirmware && !t.armed &&
             (telemetryAgeMs ?: Long.MAX_VALUE) <= 600
     }
 

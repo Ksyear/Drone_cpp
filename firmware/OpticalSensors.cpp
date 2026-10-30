@@ -29,7 +29,7 @@ namespace {
 const uint8_t kTof = 0x29;
 const uint8_t kDelayMark = 0xFF;  // PMW3901 table: pause 100 ms (register 0xFF is never written)
 
-uint8_t state, stopVariable, squal, phase;
+uint8_t state, stopVariable, squal, phase, samples;
 uint16_t range, lastPollMs;
 int16_t sumX, sumY;
 
@@ -203,6 +203,7 @@ void pollRange() {
     i2c_read_reg_to_buf(kTof, 0x14, b, 12);           // RESULT_RANGE_STATUS block
     w(0x0B, 0x01);
     range = rangeFromResult(b);
+    samples++;
     state = range ? state | kRangeValid : state & ~kRangeValid;
 }
 
@@ -237,6 +238,7 @@ uint16_t heightMm() { return range; }
 int16_t flowX() { return sumX; }
 int16_t flowY() { return sumY; }
 uint8_t quality() { return squal; }
+uint8_t rangeSamples() { return samples; }
 
 }  // namespace Optical
 #endif

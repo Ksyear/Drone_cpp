@@ -5,7 +5,12 @@ data class ControlPreview(
     val yaw: Float = 0f,
     val pitch: Float = 0f,
     val roll: Float = 0f,
+    /** Set while the firmware height hold flies: the target height in cm replaces the throttle byte (AUX2 set). */
+    val holdCm: Int? = null,
 ) {
+    /** Nothing that would spin the motors: required for ARM. */
+    val idle get() = throttle == 0f && (holdCm ?: 0) == 0
+
     fun right(x: Float, y: Float) = copy(
         roll = x.coerceIn(-1f, 1f),
         pitch = (-y).coerceIn(-1f, 1f),
@@ -18,6 +23,7 @@ data class ControlPreview(
      */
     fun rc(throttleLimit: Float, axisLimit: Float): Rc150 {
         fun axis(v: Float) = 125 + Math.round(v.coerceIn(-1f, 1f) * axisLimit.coerceIn(0f, 1f) * 99)
+        if (holdCm != null) return Rc150(axis(roll), axis(pitch), axis(yaw), holdCm.coerceIn(0, HeightTarget.MAX_CM), Rc150.AUX_HOLD)
         val thr = Math.round(minOf(throttle.coerceIn(0f, 1f), throttleLimit.coerceIn(0f, 1f)) * 250)
         return Rc150(axis(roll), axis(pitch), axis(yaw), thr, Rc150.AUX_DEFAULT)
     }
@@ -91,5 +97,46 @@ class AltitudeThrottle(hover: Float) {
         const val DESCENT_RATIO = 0.6f
         /** Speed slider 0..1 -> start/stop pulse 120..500 ms; a longer pulse gives a faster climb. */
         fun pulseMs(speed: Float) = 120L + Math.round(380 * speed.coerceIn(0f, 1f))
+    }
+}
+
+/**
+ * Target height for the firmware height hold (firmware 232 with a valid range finder): while ▲/▼ is held the
+ * target moves at the slider's speed (▼ at 60%), and on release it stays, so the craft holds that height. The first
+ * ▲ after ARM starts from the current height (at least [START_CM]); the firmware idles the motors at target 0.
+ */
+class HeightTarget {
+    var airborne = false; private set
+    private var base = 0f
+    private var dir = 0
+    private var pressedAt = 0L
+    private var rate = 0f
+
+    fun press(direction: Int, now: Long, armed: Boolean, heightCm: Float, speed: Float) {
+        if (!airborne && (direction < 0 || !armed)) return
+        base = if (airborne) value(now) else maxOf(heightCm, START_CM.toFloat())
+        airborne = true
+        dir = direction; pressedAt = now
+        rate = climbRate(speed) * (if (direction < 0) DESCENT_RATIO else 1f)
+    }
+
+    fun release(now: Long) {
+        if (dir == 0) return
+        base = value(now)
+        dir = 0
+    }
+
+    fun targetCm(now: Long) = if (airborne) Math.round(value(now)) else 0
+
+    fun land() { airborne = false; dir = 0; base = 0f }
+
+    private fun value(now: Long) = (base + dir * rate * (now - pressedAt) / 1000f).coerceIn(0f, MAX_CM.toFloat())
+
+    companion object {
+        const val START_CM = 5
+        const val MAX_CM = 120             // firmware AltitudeHold::kMaxTargetCm
+        const val DESCENT_RATIO = 0.6f
+        /** Speed slider 0..1 -> 10..50 cm/s. */
+        fun climbRate(speed: Float) = 10f + 40f * speed.coerceIn(0f, 1f)
     }
 }

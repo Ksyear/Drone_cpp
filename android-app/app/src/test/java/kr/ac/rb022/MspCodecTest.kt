@@ -30,6 +30,8 @@ class MspCodecTest {
         assertEquals(listOf(-3, -125, 30, 40, 168, -2, 1),
             listOf(status.estAlt, status.rollDeci, status.pitchDeci, status.altHold, status.vbatRaw, status.trimPitch, status.trimRoll))
         assertFalse(AirStatus.decode(frames.single())!!.copy(firmwareId = 100).controlFirmware)  // original firmware id
+        assertFalse(status.holdFirmware)                                    // 231: no height hold
+        assertTrue(status.copy(firmwareId = 232).let { it.controlFirmware && it.holdFirmware })
         // the kit's config.h thresholds: 179/184/189 = 3.5/3.6/3.7 V
         for ((raw, volts) in listOf(179 to 3.5f, 184 to 3.6f, 189 to 3.7f)) assertEquals(volts, status.copy(vbatRaw = raw).batteryVolts, 0.01f)
     }
@@ -42,6 +44,9 @@ class MspCodecTest {
         assertEquals(listOf(523, 300, -2, 87), listOf(o.heightMm, o.flowX, o.flowY, o.quality))
         val error = byteArrayOf('$'.code.toByte(), 'M'.code.toByte(), '!'.code.toByte(), 0, Msp.OPTICAL.toByte(), Msp.OPTICAL.toByte())
         assertNull(OpticalStatus.decode(MspParser().feed(error).single()))  // pre-0.9 firmware: unknown command
+        assertEquals(0, o.holdUs)
+        val withHold = OpticalStatus.decode(MspParser().feed(reply(Msp.OPTICAL, payload + byteArrayOf(0x40, 0x06))).single())!!
+        assertEquals(1600, withHold.holdUs)                                 // firmware 232: hold output in us
     }
 
     @Test fun rejectsCorruptErrorAndWrongLengthFrames() {

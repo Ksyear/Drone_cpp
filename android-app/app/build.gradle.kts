@@ -6,8 +6,8 @@ android {
         applicationId = "kr.ac.rb022.diagnostic"
         minSdk = 31
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.9-optical"
+        versionCode = 10
+        versionName = "0.10-hold"
         testInstrumentationRunner = "kr.ac.rb022.CameraSmokeInstrumentation"
     }
     buildFeatures { compose = true }

@@ -43,6 +43,36 @@ class ControlPreviewTest {
         assertEquals(0f, alt.output(10_000))
     }
 
+    @Test fun holdFrameCarriesTargetHeightWithAux2() {
+        val hold = ControlPreview(throttle = 0.7f, holdCm = 45).rc(throttleLimit = 1f, axisLimit = 1f)
+        assertEquals(45, hold.throttle)                                    // target cm, not throttle
+        assertEquals(Rc150.AUX_HOLD, hold.aux)
+        assertEquals(0x30 and Rc150.AUX_HOLD, 0x10)                        // AUX2 = 01: firmware AltitudeHold::kAuxHold
+        assertEquals(HeightTarget.MAX_CM, ControlPreview(holdCm = 500).rc(1f, 1f).throttle)
+        assertEquals(Rc150.AUX_DEFAULT, ControlPreview(throttle = 0.5f).rc(1f, 1f).aux)
+        assertTrue(ControlPreview(holdCm = 0).idle && ControlPreview().idle)
+        assertFalse(ControlPreview(holdCm = 5).idle || ControlPreview(throttle = 0.1f).idle)
+    }
+
+    @Test fun heightTargetMovesOnlyWhileHeld() {
+        val t = HeightTarget()
+        t.press(+1, 0, armed = false, heightCm = 2.4f, speed = 0.5f)       // not armed: no take-off
+        t.press(-1, 0, armed = true, heightCm = 2.4f, speed = 0.5f)        // descending on the ground: nothing
+        assertFalse(t.airborne); assertEquals(0, t.targetCm(1000))
+        t.press(+1, 0, armed = true, heightCm = 2.4f, speed = 0.5f)        // 30 cm/s from 5 cm
+        assertEquals(5, t.targetCm(0)); assertEquals(35, t.targetCm(1000))
+        t.release(1000)
+        assertEquals(35, t.targetCm(5000))                                  // released: holds
+        t.press(-1, 6000, armed = true, heightCm = 35f, speed = 0.5f)      // 18 cm/s down
+        assertEquals(17, t.targetCm(7000))
+        assertEquals(0, t.targetCm(9000))                                   // never below 0 (firmware idles on the ground)
+        t.release(9000)
+        t.press(+1, 10_000, armed = true, heightCm = 2f, speed = 1f)
+        assertEquals(HeightTarget.MAX_CM, t.targetCm(20_000))               // capped
+        t.land()
+        assertFalse(t.airborne); assertEquals(0, t.targetCm(20_000))
+    }
+
     @Test fun altitudeThrottleBounds() {
         val alt = AltitudeThrottle(5f)
         assertEquals(AltitudeThrottle.MAX_HOVER, alt.hover)
