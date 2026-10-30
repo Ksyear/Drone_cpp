@@ -271,11 +271,14 @@ private fun FlightView(ble: DroneBleClient, throttleUs: Int, onConnect: () -> Un
                 Readout("THR µs", "$throttleUs", Modifier.weight(1f))
                 Readout("ROLL", t?.let { "%.1f°".format(it.rollDeci / 10f) } ?: "—", Modifier.weight(1f))
                 Readout("PITCH", t?.let { "%.1f°".format(it.pitchDeci / 10f) } ?: "—", Modifier.weight(1f))
-                Readout("수신", ble.telemetryAgeMs?.let { "$it ms" } ?: "—", Modifier.weight(1f))
+                val o = ble.optical
+                Readout("높이", when { o == null || !o.rangeFound -> "센서 없음"; o.rangeValid -> "${o.heightMm / 10} cm"; else -> "—" },
+                    Modifier.weight(1f))
                 Readout("배터리≈", t?.let { "%.2fV".format(it.batteryVolts) } ?: "—", Modifier.weight(1f),
                     if ((t?.batteryVolts ?: 9f) < 3.5f) Amber else White)
             }
-            Text(t?.let { "VBAT raw ${it.vbatRaw} · 트림 ${it.trimPitch}/${it.trimRoll} · FW ${it.firmwareId}" } ?: "",
+            Text(t?.let { "수신 ${ble.telemetryAgeMs ?: 0} ms · 트림 ${it.trimPitch}/${it.trimRoll} · FW ${it.firmwareId}" +
+                (ble.optical?.takeIf { o -> o.flowFound }?.let { o -> " · 흐름 ${o.flowX}/${o.flowY} Q${o.quality}" } ?: "") } ?: "",
                 color = Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
         }
     }

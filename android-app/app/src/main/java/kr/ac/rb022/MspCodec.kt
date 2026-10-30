@@ -14,6 +14,8 @@ object Msp {
     const val TRIM_DOWN = 154
     const val TRIM_LEFT = 155
     const val TRIM_RIGHT = 156
+    /** Optical Plus readings from this project's firmware (firmware/OpticalSensors.hpp); older builds answer `$M!`. */
+    const val OPTICAL = 198
     const val AIR = 199
     /** Level reference from the current pose, saved to EEPROM; the firmware ignores it while ARMED. */
     const val ACC_CALIBRATION = 205
@@ -85,6 +87,18 @@ data class AirStatus(val flightState: Int, val firmwareId: Int, val estAlt: Int,
     companion object {
         fun decode(f: MspFrame): AirStatus? = if (f.command != Msp.AIR || f.error || f.payload.size != 14) null else
             AirStatus(f.byte(0), f.u16(1), f.s16(3), f.s16(5), f.s16(7), f.s16(9), f.byte(11), f.s8(12), f.s8(13))
+    }
+}
+
+/** MSP 198: status bits (1 range sensor found, 2 flow sensor found, 4 range valid), height mm, flow counts, SQUAL. */
+data class OpticalStatus(val status: Int, val heightMm: Int, val flowX: Int, val flowY: Int, val quality: Int) {
+    val rangeFound get() = status and 1 != 0
+    val flowFound get() = status and 2 != 0
+    val rangeValid get() = status and 4 != 0
+
+    companion object {
+        fun decode(f: MspFrame) = if (f.command != Msp.OPTICAL || f.error || f.payload.size != 8) null else
+            OpticalStatus(f.byte(0), f.u16(1), f.s16(3), f.s16(5), f.byte(7))
     }
 }
 

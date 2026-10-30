@@ -12,11 +12,13 @@ class ConversionTest(unittest.TestCase):
         source = ('#line 1 "/original/AirCopter.ino"\nvoid evaluateCommand();\n'
                   'evaluateCommand();  // we got a valid packet\nvoid evaluateCommand() {\n'
                   '   case MSP_SET_RAW_RC_SERIAL:\n   case MSP_ARM:\n     go_arm();\n   case MSP_DISARM:\n     go_disarm();\n'
-                  'void serialCom() {\n}\n     serialize16(100); //version\n}\n')
+                  'void serialCom() {\n}\n     serialize16(100); //version\n   case MSP_AIR:\n}\n')
         result = build.convert(source)
         self.assertIn('evaluateCommand(dataSize[CURRENTPORT])', result)
         self.assertIn('if (!validControlPayload(cmdMSP[CURRENTPORT], payloadSize)) return;', result)
         self.assertIn('if (f.ARMED && writesEeprom(cmdMSP[CURRENTPORT])) return;', result)
+        self.assertIn('   case Optical::kMspOptical:\n     headSerialReply(8);', result)
+        self.assertIn('#include "OpticalSensors.hpp"', result)
         self.assertIn('void setup() { FlightController::begin(); }', result)
         self.assertIn('#line 1 "AirCopter.ino"', result)
         self.assertIn('serialArmGuard.rcReceived(millis());', result)

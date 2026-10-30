@@ -50,6 +50,8 @@ class DroneBleClient(private val context: Context) {
         private set
     var telemetryAgeMs by mutableStateOf<Long?>(null)
         private set
+    var optical by mutableStateOf<OpticalStatus?>(null)
+        private set
     var config by mutableStateOf("")
         private set
     var controlEnabled by mutableStateOf(false)
@@ -91,6 +93,7 @@ class DroneBleClient(private val context: Context) {
         override fun run() {
             if (!uartReady) return
             if (ops.none { it.command == Msp.AIR }) enqueue(Op(Msp.AIR, Msp.request(Msp.AIR)))
+            if (ops.none { it.command == Msp.OPTICAL }) enqueue(Op(Msp.OPTICAL, Msp.request(Msp.OPTICAL)))
             telemetryAgeMs = if (telemetryAt == 0L) null else SystemClock.elapsedRealtime() - telemetryAt
             handler.postDelayed(this, 200)
         }
@@ -418,6 +421,7 @@ class DroneBleClient(private val context: Context) {
                 if (controlEnabled) status = "조종 송신 중 · ${if (air.armed) "ARMED" else "DISARMED"}"
                 continue
             }
+            if (frame.command == Msp.OPTICAL) { optical = OpticalStatus.decode(frame); continue }  // null on older firmware
             val text = RcTuning.decode(frame)?.toString() ?: BoardStatus.decode(frame)?.toString()
                 ?: decodeUint16List(frame, Msp.BOX)?.let { "BOX ${it.joinToString { v -> "0x%03X".format(v) }}" }
                 ?: decodeUint16List(frame, Msp.RC)?.let { "RC $it" }
@@ -441,6 +445,7 @@ class DroneBleClient(private val context: Context) {
         telemetry = null
         telemetryAt = 0L
         telemetryAgeMs = null
+        optical = null
         handler.removeCallbacks(telemetryTick)
         handler.removeCallbacks(controlTick)
         stopScan()

@@ -34,6 +34,16 @@ class MspCodecTest {
         for ((raw, volts) in listOf(179 to 3.5f, 184 to 3.6f, 189 to 3.7f)) assertEquals(volts, status.copy(vbatRaw = raw).batteryVolts, 0.01f)
     }
 
+    @Test fun decodesOpticalStatusAndIgnoresOlderFirmware() {
+        // range found + flow found + range valid, 523 mm, flow +300 / -2, SQUAL 87
+        val payload = byteArrayOf(7, 0x0B, 0x02, 0x2C, 0x01, 0xFE.toByte(), 0xFF.toByte(), 87)
+        val o = OpticalStatus.decode(MspParser().feed(reply(Msp.OPTICAL, payload)).single())!!
+        assertTrue(o.rangeFound && o.flowFound && o.rangeValid)
+        assertEquals(listOf(523, 300, -2, 87), listOf(o.heightMm, o.flowX, o.flowY, o.quality))
+        val error = byteArrayOf('$'.code.toByte(), 'M'.code.toByte(), '!'.code.toByte(), 0, Msp.OPTICAL.toByte(), Msp.OPTICAL.toByte())
+        assertNull(OpticalStatus.decode(MspParser().feed(error).single()))  // pre-0.9 firmware: unknown command
+    }
+
     @Test fun rejectsCorruptErrorAndWrongLengthFrames() {
         val parser = MspParser()
         val bad = reply(Msp.AIR, ByteArray(14)).also { it[it.lastIndex] = (it.last() + 1).toByte() }
