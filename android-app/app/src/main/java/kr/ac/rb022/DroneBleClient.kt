@@ -12,8 +12,10 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.content.edit
 import java.util.UUID
 
 private const val TAG = "RB022-MSP"
@@ -54,10 +56,20 @@ class DroneBleClient(private val context: Context) {
         private set
     var framesSent by mutableStateOf(0)
         private set
-    /** Stick source and bench output limits, read on every control frame. */
+    private val prefs = context.getSharedPreferences("drone", Context.MODE_PRIVATE)
+    /** Stick source and output limits, read on every control frame. Limits survive restarts; 15% is the first-run bench value. */
     var sticks: () -> ControlPreview = { ControlPreview() }
-    var throttleLimit by mutableStateOf(0.15f)
-    var axisLimit by mutableStateOf(0.5f)
+    private var throttleLimitState by mutableFloatStateOf(prefs.getFloat("throttleLimit", 0.15f))
+    var throttleLimit: Float
+        get() = throttleLimitState
+        set(value) { throttleLimitState = value; prefs.edit { putFloat("throttleLimit", value) } }
+    private var axisLimitState by mutableFloatStateOf(prefs.getFloat("axisLimit", 0.5f))
+    var axisLimit: Float
+        get() = axisLimitState
+        set(value) { axisLimitState = value; prefs.edit { putFloat("axisLimit", value) } }
+    /** Address of the last drone whose UART link came up; reconnect() looks for it. */
+    val lastDevice: String? get() = prefs.getString("lastDevice", null)
+    private var autoConnect: String? = null
     private val parser = MspParser()
     private var uart: BluetoothGattCharacteristic? = null
     private class Op(val command: Int, val bytes: ByteArray?)  // bytes == null: enable notifications
@@ -130,10 +142,13 @@ class DroneBleClient(private val context: Context) {
                     safely {
                         val name = result.scanRecord?.deviceName ?: result.device.name ?: "이름 없음"
                         val entry = BleDevice(result.device.address, name, result.rssi)
-                        // AIR#### (kit manual) first, then named devices; RSSI updates keep the row in place so taps do not jump
+                        // last drone, then AIR#### (kit manual), then named devices; RSSI updates keep the row in place so taps do not jump
                         val known = devices.indexOfFirst { it.address == entry.address }
+                        val last = lastDevice
                         devices = (if (known >= 0) devices.toMutableList().also { it[known] = entry } else devices + entry).takeLast(128)
-                            .sortedWith(compareByDescending<BleDevice> { it.name.startsWith("AIR", ignoreCase = true) }.thenByDescending { it.name != "이름 없음" })
+                            .sortedWith(compareByDescending<BleDevice> { it.address == last }.thenByDescending { it.name.startsWith("AIR", ignoreCase = true) }
+                                .thenByDescending { it.name != "이름 없음" })
+                        if (entry.address == autoConnect) connect(entry.address)
                     }
                 }
             }
@@ -149,7 +164,21 @@ class DroneBleClient(private val context: Context) {
         scanCallback = callback
         scanning = true
         selectedScanner.startScan(null, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), callback)
-        handler.postDelayed({ if (scanCallback === callback) { stopScan(); status = "검색 완료 · 기기를 직접 선택하세요" } }, 10_000)
+        handler.postDelayed({
+            if (scanCallback === callback) {
+                stopScan()
+                status = if (autoConnect != null) "마지막 드론을 찾지 못함 · 전원 확인 후 다시 연결" else "검색 완료 · 기기를 직접 선택하세요"
+                autoConnect = null
+            }
+        }, 10_000)
+    }
+
+    /** Scan and connect to [lastDevice] as soon as it advertises. False when no drone has been connected yet. */
+    fun reconnect(): Boolean {
+        val target = lastDevice ?: return false
+        scan()
+        if (scanning) { autoConnect = target; status = "마지막 드론 찾는 중" }
+        return true
     }
 
     private fun stopScan() {
@@ -209,6 +238,7 @@ class DroneBleClient(private val context: Context) {
                 opFinished()
                 if (result != BluetoothGatt.GATT_SUCCESS) { status = "알림 설정 실패: GATT $result"; return@update }
                 uartReady = true
+                prefs.edit { putString("lastDevice", address) }
                 status = "연결됨 · 상태 수신 대기 · 조종 송신 꺼짐"
                 handler.removeCallbacks(telemetryTick)
                 handler.post(telemetryTick)
@@ -295,6 +325,23 @@ class DroneBleClient(private val context: Context) {
         pump()
     }
 
+    /** Long-press ARM: start the RC stream at throttle 0 if it is off, then ARM once enough frames went out. */
+    fun armWhenReady() {
+        if (!controlEnabled) setControl(true)
+        if (!controlEnabled) return
+        handler.postDelayed({ if (controlEnabled) arm() }, if (framesSinceEnable >= 6) 0L else 400L)
+    }
+
+    /** Trim step or ACC calibration. Both write EEPROM, so only on a fresh DISARMED status. */
+    fun calibrate(command: Int) {
+        val t = telemetry
+        if (!uartReady || t == null || t.armed || (telemetryAgeMs ?: Long.MAX_VALUE) > 1000) {
+            status = "보정은 연결된 시동 꺼짐 상태에서만 가능합니다"; return
+        }
+        enqueue(Op(command, Msp.request(command)))
+        log("보정 명령 $command")
+    }
+
     fun disarm() {
         if (!uartReady) return
         ops.removeAll { it.command == Msp.RC_COMPACT }
@@ -374,6 +421,7 @@ class DroneBleClient(private val context: Context) {
     }
 
     fun disconnect(reason: String = "연결 해제 · 제어 송신 잠금") {
+        autoConnect = null
         generation++
         readGeneration++
         controlEnabled = false

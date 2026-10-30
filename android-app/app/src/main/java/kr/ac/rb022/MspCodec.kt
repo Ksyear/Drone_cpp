@@ -9,7 +9,14 @@ object Msp {
     const val RC_COMPACT = 150
     const val ARM = 151
     const val DISARM = 152
+    /** One angle-trim step each, saved to EEPROM by the firmware (pitch +/-, roll -/+). */
+    const val TRIM_UP = 153
+    const val TRIM_DOWN = 154
+    const val TRIM_LEFT = 155
+    const val TRIM_RIGHT = 156
     const val AIR = 199
+    /** Level reference from the current pose, saved to EEPROM; the firmware ignores it while ARMED. */
+    const val ACC_CALIBRATION = 205
     /** Value of the 199 "version" field in this project's derived firmware (firmware/ArmGuard.hpp). */
     const val CONTROL_FIRMWARE_ID = 231
 
