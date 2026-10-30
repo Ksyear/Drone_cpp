@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.edit
+import java.io.File
 import java.util.UUID
 
 private const val TAG = "RB022-MSP"
@@ -52,6 +53,13 @@ class DroneBleClient(private val context: Context) {
         private set
     var optical by mutableStateOf<OpticalStatus?>(null)
         private set
+    /** Name of the flight log being written while ARMED (FlightRecorder), null otherwise. */
+    var recordingFile by mutableStateOf<String?>(null)
+        private set
+    var lowBattery by mutableStateOf(false)
+        private set
+    private val recorder = FlightRecorder(File(context.filesDir, "flights"))
+    private val lowBatteryWatch = LowBatteryWatch()
     var config by mutableStateOf("")
         private set
     var controlEnabled by mutableStateOf(false)
@@ -89,13 +97,15 @@ class DroneBleClient(private val context: Context) {
     private var telemetryAt = 0L
     private var framesSinceEnable = 0
     private var airCount = 0
+    private var telemetryTicks = 0
     private val telemetryTick = object : Runnable {
         override fun run() {
             if (!uartReady) return
-            if (ops.none { it.command == Msp.AIR }) enqueue(Op(Msp.AIR, Msp.request(Msp.AIR)))
+            // 199 at 5 Hz, 198 at 10 Hz (the flight log rows follow 198)
+            if (++telemetryTicks % 2 == 0 && ops.none { it.command == Msp.AIR }) enqueue(Op(Msp.AIR, Msp.request(Msp.AIR)))
             if (ops.none { it.command == Msp.OPTICAL }) enqueue(Op(Msp.OPTICAL, Msp.request(Msp.OPTICAL)))
             telemetryAgeMs = if (telemetryAt == 0L) null else SystemClock.elapsedRealtime() - telemetryAt
-            handler.postDelayed(this, 200)
+            handler.postDelayed(this, 100)
         }
     }
     private val controlTick = object : Runnable {
@@ -417,11 +427,20 @@ class DroneBleClient(private val context: Context) {
                 val previous = telemetry
                 if (previous == null || previous.armed != air.armed || previous.firmwareId != air.firmwareId || ++airCount % 25 == 0)
                     Log.i(TAG, "rx 199: $raw → armed=${air.armed} fw=${air.firmwareId} roll=${air.rollDeci} pitch=${air.pitchDeci}")
+                if (air.armed != (previous?.armed == true)) {
+                    if (air.armed) recorder.start(SystemClock.elapsedRealtime(), System.currentTimeMillis()) else recorder.stop()
+                    recordingFile = recorder.file?.name?.takeIf { recorder.recording }
+                }
+                lowBattery = lowBatteryWatch.update(air)
                 telemetry = air; telemetryAt = SystemClock.elapsedRealtime(); telemetryAgeMs = 0
                 if (controlEnabled) status = "조종 송신 중 · ${if (air.armed) "ARMED" else "DISARMED"}"
                 continue
             }
-            if (frame.command == Msp.OPTICAL) { optical = OpticalStatus.decode(frame); continue }  // null on older firmware
+            if (frame.command == Msp.OPTICAL) {  // null on older firmware
+                optical = OpticalStatus.decode(frame)
+                optical?.let { if (recorder.recording) recorder.record(SystemClock.elapsedRealtime(), telemetry, it, sticks().rc(throttleLimit, axisLimit)) }
+                continue
+            }
             val text = RcTuning.decode(frame)?.toString() ?: BoardStatus.decode(frame)?.toString()
                 ?: decodeUint16List(frame, Msp.BOX)?.let { "BOX ${it.joinToString { v -> "0x%03X".format(v) }}" }
                 ?: decodeUint16List(frame, Msp.RC)?.let { "RC $it" }
@@ -446,6 +465,7 @@ class DroneBleClient(private val context: Context) {
         telemetryAt = 0L
         telemetryAgeMs = null
         optical = null
+        recorder.stop(); recordingFile = null; lowBattery = false
         handler.removeCallbacks(telemetryTick)
         handler.removeCallbacks(controlTick)
         stopScan()

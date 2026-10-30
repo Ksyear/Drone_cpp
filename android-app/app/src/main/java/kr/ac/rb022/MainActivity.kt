@@ -284,6 +284,8 @@ private fun FlightView(ble: DroneBleClient, throttleUs: Int, onConnect: () -> Un
         Text(when { !ble.connected -> "드론 연결 안 됨"; t == null -> "상태 수신 대기"; t.armed -> "ARMED"; else -> "DISARMED" },
             color = if (t?.armed == true) Coral else White, fontSize = 28.sp, fontWeight = FontWeight.Black)
         Text(ble.status, color = Muted, fontSize = 12.sp, textAlign = TextAlign.Center, maxLines = 2)
+        if (ble.lowBattery) Text("배터리 낮음 (${"%.2f".format(t?.batteryVolts ?: 0f)} V) · 바로 착륙하세요", color = Coral,
+            fontSize = 16.sp, fontWeight = FontWeight.Bold)
         if (!ble.connected) Button(onClick = onConnect, enabled = !ble.scanning) { Text(if (ble.scanning) "드론 찾는 중" else "드론 연결") }
         else {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -297,7 +299,8 @@ private fun FlightView(ble: DroneBleClient, throttleUs: Int, onConnect: () -> Un
                     if ((t?.batteryVolts ?: 9f) < 3.5f) Amber else White)
             }
             Text(t?.let { "수신 ${ble.telemetryAgeMs ?: 0} ms · 트림 ${it.trimPitch}/${it.trimRoll} · FW ${it.firmwareId}" +
-                (ble.optical?.takeIf { o -> o.flowFound }?.let { o -> " · 흐름 ${o.flowX}/${o.flowY} Q${o.quality}" } ?: "") } ?: "",
+                (ble.optical?.takeIf { o -> o.flowFound }?.let { o -> " · 흐름 ${o.flowX}/${o.flowY} Q${o.quality}" } ?: "") +
+                (if (ble.recordingFile != null) " · ● 기록 중" else "") } ?: "",
                 color = Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
         }
     }
