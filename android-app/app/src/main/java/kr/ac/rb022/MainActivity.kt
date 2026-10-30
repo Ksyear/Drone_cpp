@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -25,7 +26,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -56,6 +59,7 @@ private val White = Color(0xffEDF4FA)
 class MainActivity : ComponentActivity() {
     private lateinit var ble: DroneBleClient
     private lateinit var camera: CameraClient
+    private lateinit var altitude: AltitudeThrottle
     private var preview by mutableStateOf(ControlPreview())
     private var hub: MissionHub? = null
     private var mission by mutableStateOf<MissionLink?>(null)
@@ -69,6 +73,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(SystemBarStyle.dark(0xff090E14.toInt()), SystemBarStyle.dark(0xff090E14.toInt()))
         ble = DroneBleClient(applicationContext)
         ble.sticks = { preview }
+        altitude = AltitudeThrottle(ble.hoverThrottle)
         camera = CameraClient(applicationContext)
         val preferences = getSharedPreferences("camera", MODE_PRIVATE)
         setContent {
@@ -77,6 +82,15 @@ class MainActivity : ComponentActivity() {
                 var showSettings by rememberSaveable { mutableStateOf(false) }
                 var address by rememberSaveable { mutableStateOf(preferences.getString("stream", "") ?: "") }
                 LaunchedEffect(ble.connected) { if (!ble.connected) preview = ControlPreview() }
+                val armed = ble.telemetry?.armed == true
+                LaunchedEffect(armed) { if (!armed) altitude.land() }  // MCU disarm (STOP, watchdog) ends the flight
+                LaunchedEffect(Unit) {  // the RC sender reads preview, so the time-based output lands there
+                    while (true) {
+                        val out = altitude.output(SystemClock.uptimeMillis())
+                        if (out != preview.throttle) preview = preview.copy(throttle = out)
+                        delay(50)
+                    }
+                }
                 val scan = {
                     preview = ControlPreview()
                     if (ble.hasPermissions()) ble.scan()
@@ -86,9 +100,14 @@ class MainActivity : ComponentActivity() {
                 val connectDrone = { if (!ble.hasPermissions() || !ble.reconnect()) { showSettings = true; scan() } }
                 Surface(Modifier.fillMaxSize(), color = Background) {
                     Row(Modifier.fillMaxSize().safeDrawingPadding().padding(10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        ThrottlePanel(preview.throttle, "${(preview.throttle * 100).toInt()}% · 상한 ${(ble.throttleLimit * 100).toInt()}%",
-                            ble.throttleLimit < 0.3f, Modifier.weight(0.3f).fillMaxHeight(),
-                            { preview = preview.throttleStep(it) }, { preview = preview.copy(yaw = it) })
+                        ThrottlePanel("출력 ${(minOf(preview.throttle, ble.throttleLimit) * 100).toInt()}% · 최대 ${(ble.throttleLimit * 100).toInt()}%",
+                            ble.throttleLimit < 0.3f, ble.climbSpeed, Modifier.weight(0.3f).fillMaxHeight(),
+                            onPress = { dir ->
+                                altitude.press(dir, SystemClock.uptimeMillis(), armed, AltitudeThrottle.pulseMs(ble.climbSpeed))
+                                if (altitude.airborne) ble.hoverThrottle = altitude.hover
+                            },
+                            onRelease = { altitude.release(SystemClock.uptimeMillis()) },
+                            onSpeed = { ble.climbSpeed = it }, onYaw = { preview = preview.copy(yaw = it) })
                         Column(Modifier.weight(0.4f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             StatusBar(ble, camera, mission != null) { showSettings = true }
                             CameraViewport(camera, ble, 1000 + 4 * preview.rc(ble.throttleLimit, ble.axisLimit).throttle,
@@ -98,8 +117,8 @@ class MainActivity : ComponentActivity() {
                                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
                                 }
                             }
-                            ActionBar(ble, onDisarm = { preview = preview.copy(throttle = 0f); ble.disarm() },
-                                onStop = { preview = ControlPreview(); ble.emergencyStop() })
+                            ActionBar(ble, onDisarm = { altitude.land(); preview = preview.copy(throttle = 0f); ble.disarm() },
+                                onStop = { altitude.land(); preview = ControlPreview(); ble.emergencyStop() })
                         }
                         StickPad("PITCH", "ROLL", preview.roll, -preview.pitch, "${(preview.pitch * 100).toInt()} / ${(preview.roll * 100).toInt()}",
                             Modifier.weight(0.3f).fillMaxHeight(), { x, y -> preview = preview.right(x, y) },
@@ -147,6 +166,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         stopMission()
+        altitude.land()
         preview = ControlPreview()
         ble.disconnect("앱 비활성 · 연결 해제")  // RC stream stops: the MCU link watchdog cuts armed outputs
         camera.disconnect()
@@ -301,27 +321,24 @@ private fun ActionBar(ble: DroneBleClient, onDisarm: () -> Unit, onStop: () -> U
 }
 
 /**
- * Throttle on ▲ climb / ▼ slow descent (tap = one step, hold = repeat, ▼ slower) and yaw on hold-to-turn buttons,
- * so raising the throttle can no longer leak a yaw command the way a combined throttle/yaw pad did. Released, the
- * output stays put; there is no altitude sensor, so this holds the throttle, not the height.
+ * ▲ climb / ▼ slow descent while held, release = stop and hold ([AltitudeThrottle]); the slider beside them sets
+ * how fast. Yaw sits on its own hold-to-turn buttons so a climb can no longer leak a yaw command.
  */
 @Composable
-private fun ThrottlePanel(throttle: Float, value: String, testCap: Boolean, modifier: Modifier, onStep: (Int) -> Unit, onYaw: (Float) -> Unit) {
+private fun ThrottlePanel(value: String, testCap: Boolean, speed: Float, modifier: Modifier, onPress: (Int) -> Unit, onRelease: () -> Unit,
+                          onSpeed: (Float) -> Unit, onYaw: (Float) -> Unit) {
     Column(modifier.clip(RoundedCornerShape(20.dp)).background(Panel).border(1.dp, Outline, RoundedCornerShape(20.dp)).padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("THROTTLE · 떼면 유지", fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+            Text("높이 · 떼면 멈춤", fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
             Text("YAW", color = Muted, fontSize = 11.sp, letterSpacing = 1.sp)
         }
         Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                HoldButton("▲ 상승", "스로틀 올리기", Modifier.weight(1f).fillMaxWidth(), { repeatWhileHeld(90) { onStep(+1) } })
-                HoldButton("▼ 천천히 하강", "스로틀 내리기", Modifier.weight(1f).fillMaxWidth(), { repeatWhileHeld(250) { onStep(-1) } })
+                HoldButton("▲ 상승", "스로틀 올리기", Modifier.weight(1f).fillMaxWidth(), { onPress(+1); awaitCancellation() }, onRelease)
+                HoldButton("▼ 천천히 하강", "스로틀 내리기", Modifier.weight(1f).fillMaxWidth(), { onPress(-1); awaitCancellation() }, onRelease)
             }
-            Box(Modifier.width(18.dp).fillMaxHeight().clip(RoundedCornerShape(9.dp)).background(Color(0xff0B121A)),
-                contentAlignment = Alignment.BottomCenter) {
-                Box(Modifier.fillMaxWidth().fillMaxHeight(throttle).background(Accent))
-            }
+            VerticalSlider(speed, "속도", "상승 속도 ${(speed * 100).toInt()}%", Modifier.width(44.dp).fillMaxHeight(), onSpeed)
         }
         Row(Modifier.fillMaxWidth().height(56.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             HoldButton("↺ 왼쪽", "왼쪽으로 회전", Modifier.weight(1f).fillMaxHeight(),
@@ -330,15 +347,33 @@ private fun ThrottlePanel(throttle: Float, value: String, testCap: Boolean, modi
                 { onYaw(ControlPreview.YAW_BUTTON); awaitCancellation() }) { onYaw(0f) }
         }
         Text(value, color = Accent, fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.align(Alignment.CenterHorizontally))
-        if (testCap) Text("시험용 상한: 뜨지 않음 · 설정에서 올리기", color = Amber, fontSize = 10.sp,
+        if (testCap) Text("최대 출력이 낮음: 뜨지 않음 · 설정에서 올리기", color = Amber, fontSize = 10.sp,
             modifier = Modifier.align(Alignment.CenterHorizontally))
     }
 }
 
-private suspend fun repeatWhileHeld(periodMs: Long, step: () -> Unit) {
-    step()
-    delay(350)
-    while (true) { step(); delay(periodMs) }
+/** 0..1, top = 1; tap or drag anywhere on the track. */
+@Composable
+private fun VerticalSlider(value: Float, label: String, description: String, modifier: Modifier, onChange: (Float) -> Unit) {
+    val change by rememberUpdatedState(onChange)
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, color = Muted, fontSize = 10.sp)
+        Canvas(Modifier.weight(1f).fillMaxWidth().semantics { contentDescription = description }
+            .pointerInput(Unit) { detectTapGestures { change((1f - it.y / size.height).coerceIn(0f, 1f)) } }
+            .pointerInput(Unit) {
+                detectDragGestures { c, _ -> c.consume(); change((1f - c.position.y / size.height).coerceIn(0f, 1f)) }
+            }) {
+            val w = 10.dp.toPx()
+            val x = (size.width - w) / 2
+            val y = size.height * (1f - value)
+            drawRoundRect(Color(0xff0B121A), Offset(x, 0f), Size(w, size.height),
+                CornerRadius(w / 2))
+            drawRoundRect(Accent.copy(alpha = .55f), Offset(x, y), Size(w, size.height - y),
+                CornerRadius(w / 2))
+            drawCircle(Accent, 11.dp.toPx(), Offset(size.width / 2, y.coerceIn(11.dp.toPx(), size.height - 11.dp.toPx())))
+        }
+        Text("${(value * 100).toInt()}", color = Accent, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+    }
 }
 
 /** Runs [whilePressed] from touch-down until the finger lifts or leaves the button, then [onRelease]. */
@@ -454,7 +489,7 @@ private fun DroneSettings(ble: DroneBleClient, preview: ControlPreview, onScan: 
                 }
                 Switch(ble.controlEnabled, { ble.setControl(it) })
             }
-            Text("스로틀 상한 ${(ble.throttleLimit * 100).toInt()}% · 처음 값 15%(모터 시험용), 비행하려면 올리세요. 바꾼 값은 유지됩니다", color = Muted, fontSize = 12.sp)
+            Text("최대 출력 ${(ble.throttleLimit * 100).toInt()}% · 비행은 100%. 프로펠러 없이 모터만 시험할 때 15%로 낮추세요(유지됨)", color = Muted, fontSize = 12.sp)
             Slider(ble.throttleLimit, { ble.throttleLimit = it }, valueRange = 0.1f..1f)
             Text("조종 감도 ${(ble.axisLimit * 100).toInt()}%", color = Muted, fontSize = 12.sp)
             Slider(ble.axisLimit, { ble.axisLimit = it }, valueRange = 0.2f..1f)
@@ -474,8 +509,7 @@ private fun DroneSettings(ble: DroneBleClient, preview: ControlPreview, onScan: 
             }
             item {
                 Text(ble.logs.takeLast(8).joinToString("\n").ifEmpty { "수신 기록 없음" }, fontSize = 10.sp, color = Muted)
-                Text("아래 슬라이더는 스틱과 같으며 조종 송신이 켜져 있으면 전송됩니다.", color = Amber, fontSize = 11.sp)
-                PreviewSlider("스로틀", preview.throttle, 0f..1f) { onPreview(preview.copy(throttle = it)) }
+                Text("아래 슬라이더는 조이스틱·회전 버튼과 같으며 조종 송신이 켜져 있으면 전송됩니다. 높이는 ▲/▼ 버튼으로만.", color = Amber, fontSize = 11.sp)
                 PreviewSlider("Yaw", preview.yaw, -1f..1f) { onPreview(preview.copy(yaw = it)) }
                 PreviewSlider("Roll", preview.roll, -1f..1f) { onPreview(preview.copy(roll = it)) }
                 PreviewSlider("Pitch", preview.pitch, -1f..1f) { onPreview(preview.copy(pitch = it)) }

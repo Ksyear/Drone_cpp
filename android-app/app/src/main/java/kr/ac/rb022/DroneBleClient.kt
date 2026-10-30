@@ -59,7 +59,7 @@ class DroneBleClient(private val context: Context) {
     private val prefs = context.getSharedPreferences("drone", Context.MODE_PRIVATE)
     /** Stick source and output limits, read on every control frame. Limits survive restarts; 15% is the first-run bench value. */
     var sticks: () -> ControlPreview = { ControlPreview() }
-    private var throttleLimitState by mutableFloatStateOf(prefs.getFloat("throttleLimit", 0.15f))
+    private var throttleLimitState by mutableFloatStateOf(prefs.getFloat("throttleLimit", 1f))
     var throttleLimit: Float
         get() = throttleLimitState
         set(value) { throttleLimitState = value; prefs.edit { putFloat("throttleLimit", value) } }
@@ -67,6 +67,14 @@ class DroneBleClient(private val context: Context) {
     var axisLimit: Float
         get() = axisLimitState
         set(value) { axisLimitState = value; prefs.edit { putFloat("axisLimit", value) } }
+    private var climbSpeedState by mutableFloatStateOf(prefs.getFloat("climbSpeed", 0.4f))
+    var climbSpeed: Float
+        get() = climbSpeedState
+        set(value) { climbSpeedState = value; prefs.edit { putFloat("climbSpeed", value) } }
+    /** Last learned hover output, the starting guess for the next flight. */
+    var hoverThrottle: Float
+        get() = prefs.getFloat("hover", AltitudeThrottle.DEFAULT_HOVER)
+        set(value) = prefs.edit { putFloat("hover", value) }
     /** Address of the last drone whose UART link came up; reconnect() looks for it. */
     val lastDevice: String? get() = prefs.getString("lastDevice", null)
     private var autoConnect: String? = null
