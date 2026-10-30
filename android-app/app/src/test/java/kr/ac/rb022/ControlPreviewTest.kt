@@ -50,6 +50,9 @@ class ControlPreviewTest {
         assertEquals(0x30 and Rc150.AUX_HOLD, 0x10)                        // AUX2 = 01: firmware AltitudeHold::kAuxHold
         assertEquals(HeightTarget.MAX_CM, ControlPreview(holdCm = 500).rc(1f, 1f).throttle)
         assertEquals(Rc150.AUX_DEFAULT, ControlPreview(throttle = 0.5f).rc(1f, 1f).aux)
+        val position = ControlPreview(holdCm = 45, positionHold = true).rc(1f, 1f)
+        assertEquals(0x19, position.aux)                                    // AUX2 hold + AUX3 high (PositionHold::kAuxRequest)
+        assertEquals(Rc150.AUX_DEFAULT, ControlPreview(throttle = 0.5f, positionHold = true).rc(1f, 1f).aux)  // only with height hold
         assertTrue(ControlPreview(holdCm = 0).idle && ControlPreview().idle)
         assertFalse(ControlPreview(holdCm = 5).idle || ControlPreview(throttle = 0.1f).idle)
     }

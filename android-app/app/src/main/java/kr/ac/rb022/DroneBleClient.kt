@@ -81,6 +81,11 @@ class DroneBleClient(private val context: Context) {
     var climbSpeed: Float
         get() = climbSpeedState
         set(value) { climbSpeedState = value; prefs.edit { putFloat("climbSpeed", value) } }
+    private var positionHoldState by mutableStateOf(prefs.getBoolean("positionHold", false))
+    /** Experimental firmware position hold during height hold flights; off until tuned. */
+    var positionHoldEnabled: Boolean
+        get() = positionHoldState
+        set(value) { positionHoldState = value; prefs.edit { putBoolean("positionHold", value) } }
     /** Last learned hover output, the starting guess for the next flight. */
     var hoverThrottle: Float
         get() = prefs.getFloat("hover", AltitudeThrottle.DEFAULT_HOVER)
@@ -323,7 +328,7 @@ class DroneBleClient(private val context: Context) {
         when {
             !uartReady -> status = "UART 연결 필요"
             t == null || (telemetryAgeMs ?: Long.MAX_VALUE) > 1000 -> status = "드론 상태(199) 응답 없음 · 조종 잠금"
-            !t.controlFirmware -> status = "펌웨어 ID ${t.firmwareId} · 보호 펌웨어(231/232) 아님 · 조종 잠금"
+            !t.controlFirmware -> status = "펌웨어 ID ${t.firmwareId} · 보호 펌웨어(231~233) 아님 · 조종 잠금"
             else -> {
                 controlEnabled = true; framesSinceEnable = 0
                 status = "조종 송신 중 · DISARMED"

@@ -14,7 +14,7 @@ class FlightRecorderTest {
     @Test fun rowHasOneValuePerHeaderColumn() {
         val row = FlightRecorder.row(1234, air, optical, Rc150(125, 125, 125, 40, Rc150.AUX_HOLD))
         assertEquals(FlightRecorder.HEADER.split(",").size, row.split(",").size)
-        assertEquals("1234,1,-1.2,3.4,180,3.52,412,1,30,-5,90,1612,40,21", row)
+        assertEquals("1234,1,-1.2,3.4,180,3.52,412,1,30,-5,90,1612,0,0,0,125,125,40,21", row)
         assertEquals(FlightRecorder.HEADER.split(",").size, FlightRecorder.row(0, null, optical, Rc150(125, 125, 125, 0, 5)).split(",").size)
     }
 

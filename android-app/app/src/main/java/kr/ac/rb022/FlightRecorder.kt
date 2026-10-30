@@ -37,7 +37,8 @@ class FlightRecorder(private val dir: File) {
 
     companion object {
         const val KEEP = 30
-        const val HEADER = "t_ms,armed,roll_deg,pitch_deg,vbat_raw,battery_v,height_mm,range_valid,flow_x,flow_y,squal,hold_us,rc_throttle,rc_aux"
+        const val HEADER = "t_ms,armed,roll_deg,pitch_deg,vbat_raw,battery_v,height_mm,range_valid,flow_x,flow_y,squal,hold_us," +
+            "forward_cm,right_cm,position_active,rc_roll,rc_pitch,rc_throttle,rc_aux"
 
         fun row(t: Long, air: AirStatus?, o: OpticalStatus, rc: Rc150): String = listOf(
             t.toString(),
@@ -47,7 +48,8 @@ class FlightRecorder(private val dir: File) {
             air?.vbatRaw?.toString() ?: "",
             air?.let { "%.2f".format(Locale.US, it.batteryVolts) } ?: "",
             o.heightMm.toString(), if (o.rangeValid) "1" else "0", o.flowX.toString(), o.flowY.toString(),
-            o.quality.toString(), o.holdUs.toString(), rc.throttle.toString(), rc.aux.toString(),
+            o.quality.toString(), o.holdUs.toString(), o.forwardCm.toString(), o.rightCm.toString(), if (o.positionActive) "1" else "0",
+            rc.roll.toString(), rc.pitch.toString(), rc.throttle.toString(), rc.aux.toString(),
         ).joinToString(",")
     }
 }

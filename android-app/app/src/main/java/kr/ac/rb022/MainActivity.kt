@@ -92,8 +92,9 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {  // the RC sender reads preview, so the time-based output lands there
                     while (true) {
                         val now = SystemClock.uptimeMillis()
-                        val next = if (holdFlight) preview.copy(throttle = 0f, holdCm = heightTarget.targetCm(now))
-                            else preview.copy(throttle = altitude.output(now), holdCm = null)
+                        val next = if (holdFlight) preview.copy(throttle = 0f, holdCm = heightTarget.targetCm(now),
+                                positionHold = ble.positionHoldEnabled && ble.telemetry?.positionFirmware == true && ble.optical?.flowFound == true)
+                            else preview.copy(throttle = altitude.output(now), holdCm = null, positionHold = false)
                         if (next != preview) preview = next
                         delay(50)
                     }
@@ -299,7 +300,8 @@ private fun FlightView(ble: DroneBleClient, throttleUs: Int, onConnect: () -> Un
                     if ((t?.batteryVolts ?: 9f) < 3.5f) Amber else White)
             }
             Text(t?.let { "수신 ${ble.telemetryAgeMs ?: 0} ms · 트림 ${it.trimPitch}/${it.trimRoll} · FW ${it.firmwareId}" +
-                (ble.optical?.takeIf { o -> o.flowFound }?.let { o -> " · 흐름 ${o.flowX}/${o.flowY} Q${o.quality}" } ?: "") +
+                (ble.optical?.takeIf { o -> o.flowFound }?.let { o -> " · 흐름 ${o.flowX}/${o.flowY} Q${o.quality}" +
+                    (if (it.armed) " · 위치 앞 ${o.forwardCm}/오른쪽 ${o.rightCm} cm${if (o.positionActive) " 유지 중" else ""}" else "") } ?: "") +
                 (if (ble.recordingFile != null) " · ● 기록 중" else "") } ?: "",
                 color = Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
         }
@@ -510,7 +512,7 @@ private fun DroneSettings(ble: DroneBleClient, preview: ControlPreview, onScan: 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("조종 송신", fontWeight = FontWeight.Bold)
-                    Text("보호 펌웨어(ID ${Msp.CONTROL_FIRMWARE_ID}·${Msp.HOLD_FIRMWARE_ID})가 응답할 때만 켜집니다. 시동 버튼을 길게 누르면 자동으로 켜집니다. 송신이 끊기면 MCU가 0.5초 안에 출력을 끊습니다.", color = Muted, fontSize = 11.sp)
+                    Text("보호 펌웨어(ID ${Msp.CONTROL_FIRMWARE_ID}~${Msp.POSITION_FIRMWARE_ID})가 응답할 때만 켜집니다. 시동 버튼을 길게 누르면 자동으로 켜집니다. 송신이 끊기면 MCU가 0.5초 안에 출력을 끊습니다.", color = Muted, fontSize = 11.sp)
                 }
                 Switch(ble.controlEnabled, { ble.setControl(it) })
             }
@@ -518,6 +520,14 @@ private fun DroneSettings(ble: DroneBleClient, preview: ControlPreview, onScan: 
             Slider(ble.throttleLimit, { ble.throttleLimit = it }, valueRange = 0.1f..1f)
             Text("조종 감도 ${(ble.axisLimit * 100).toInt()}%", color = Muted, fontSize = 12.sp)
             Slider(ble.axisLimit, { ble.axisLimit = it }, valueRange = 0.2f..1f)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("위치 유지 (실험)", fontWeight = FontWeight.Bold)
+                    Text("높이 유지 비행에서 이동 스틱을 놓으면 그 자리에 머물려고 합니다. 펌웨어 233에서만 동작하고, 바닥 센서 보정·비행 튜닝 전이라 기본 꺼짐. 스틱을 움직이면 항상 스틱이 우선합니다.",
+                        color = Muted, fontSize = 11.sp)
+                }
+                Switch(ble.positionHoldEnabled, { ble.positionHoldEnabled = it })
+            }
         }
         item { LevelSettings(ble) }
         item {

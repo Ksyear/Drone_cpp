@@ -29,7 +29,7 @@ namespace {
 const uint8_t kTof = 0x29;
 const uint8_t kDelayMark = 0xFF;  // PMW3901 table: pause 100 ms (register 0xFF is never written)
 
-uint8_t state, stopVariable, squal, phase, samples;
+uint8_t state, stopVariable, squal, phase, samples, bursts;
 uint16_t range, lastPollMs;
 int16_t sumX, sumY;
 
@@ -214,6 +214,7 @@ void pollFlow() {
     release();
     Flow f = flowFromBurst(b);
     squal = f.squal;
+    bursts++;
     if (f.moved) { sumX += f.dx; sumY += f.dy; }
 }
 
@@ -239,6 +240,7 @@ int16_t flowX() { return sumX; }
 int16_t flowY() { return sumY; }
 uint8_t quality() { return squal; }
 uint8_t rangeSamples() { return samples; }
+uint8_t flowSamples() { return bursts; }
 
 }  // namespace Optical
 #endif

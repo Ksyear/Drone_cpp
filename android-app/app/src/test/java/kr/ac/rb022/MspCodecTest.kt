@@ -31,7 +31,9 @@ class MspCodecTest {
             listOf(status.estAlt, status.rollDeci, status.pitchDeci, status.altHold, status.vbatRaw, status.trimPitch, status.trimRoll))
         assertFalse(AirStatus.decode(frames.single())!!.copy(firmwareId = 100).controlFirmware)  // original firmware id
         assertFalse(status.holdFirmware)                                    // 231: no height hold
-        assertTrue(status.copy(firmwareId = 232).let { it.controlFirmware && it.holdFirmware })
+        assertTrue(status.copy(firmwareId = 232).let { it.controlFirmware && it.holdFirmware && !it.positionFirmware })
+        assertTrue(status.copy(firmwareId = 233).let { it.controlFirmware && it.holdFirmware && it.positionFirmware })
+        assertFalse(status.copy(firmwareId = 234).controlFirmware)
         // the kit's config.h thresholds: 179/184/189 = 3.5/3.6/3.7 V
         for ((raw, volts) in listOf(179 to 3.5f, 184 to 3.6f, 189 to 3.7f)) assertEquals(volts, status.copy(vbatRaw = raw).batteryVolts, 0.01f)
     }
@@ -47,6 +49,10 @@ class MspCodecTest {
         assertEquals(0, o.holdUs)
         val withHold = OpticalStatus.decode(MspParser().feed(reply(Msp.OPTICAL, payload + byteArrayOf(0x40, 0x06))).single())!!
         assertEquals(1600, withHold.holdUs)                                 // firmware 232: hold output in us
+        val withPosition = OpticalStatus.decode(MspParser().feed(reply(Msp.OPTICAL,
+            payload + byteArrayOf(0x40, 0x06, 12, 0, 0xFD.toByte(), 0xFF.toByte(), 1))).single())!!
+        assertEquals(listOf(12, -3), listOf(withPosition.forwardCm, withPosition.rightCm))  // odometry since ARM
+        assertTrue(withPosition.positionActive && !withHold.positionActive)
     }
 
     @Test fun rejectsCorruptErrorAndWrongLengthFrames() {

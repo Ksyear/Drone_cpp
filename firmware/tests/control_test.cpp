@@ -2,6 +2,7 @@
 #include "FlightController.hpp"
 #include "ArmGuard.hpp"
 #include "AltitudeHold.hpp"
+#include "PositionHold.hpp"
 #include <cassert>
 
 static int starts = 0;
@@ -11,7 +12,7 @@ static int opticalPolls = 0;
 static int holdSteps = 0;
 void legacySetup() { ++starts; }
 void legacyLoop() { ++updates; }
-void altitudeHoldStep() { assert(opticalPolls == holdSteps + 1); ++holdSteps; }  // after the sensor poll
+void holdStep() { assert(opticalPolls == holdSteps + 1); ++holdSteps; }  // after the sensor poll
 namespace Optical {
 void begin() { assert(starts == 1); ++opticalBegins; }  // after legacySetup has started I2C
 void poll() { assert(updates == opticalPolls + 1); ++opticalPolls; }
@@ -105,6 +106,45 @@ int main() {
     level.command(0x15, 0);
     t += 33; level.update(true, true, 60, ++sample, t);
     assert(level.throttle(0) == AltitudeHold::kIdleUs && !level.engaged());
+
+    // position hold: pilot sticks pass unless requested, height-held, usable flow and centred sticks
+    PositionHold pos;
+    pos.command(0x15, 1600, 1400);                              // height hold only (AUX3 = 1500)
+    assert(!pos.requested() && pos.roll() == 1600 && pos.pitch() == 1400);
+    uint32_t pt = 0;
+    uint8_t ps = 0;
+    int16_t fx = 0;
+    auto flowStep = [&](int16_t dx, uint16_t mm, uint8_t q, int16_t pitchDeci = 0) {
+        pt += 20; fx = int16_t(fx + dx);
+        pos.update(true, true, fx, 0, q, ++ps, mm, 0, pitchDeci, pt);
+    };
+    pos.command(0x19, 1500, 1500);                              // AUX2 + AUX3: height and position hold
+    assert(pos.requested());
+    flowStep(0, 400, 100); flowStep(0, 400, 100);               // primes, then anchors
+    assert(pos.active() && pos.roll() == 1500 && pos.pitch() == 1500);
+    for (int i = 0; i < 25; ++i) flowStep(PositionHold::kForwardSign * 8, 400, 100);  // drifting forward
+    assert(pos.forwardCm() > 5);
+    assert(pos.pitch() < 1500 && pos.pitch() >= PositionHold::toUs(-PositionHold::kMaxTiltDeg));  // tilts back, capped
+    pos.command(0x19, 1500, 1560);                              // pilot pushes pitch: the pilot wins
+    flowStep(0, 400, 100);
+    assert(!pos.active() && pos.pitch() == 1560);
+    pos.command(0x19, 1500, 1500); flowStep(0, 400, 100);       // released while still moving: new anchor,
+    assert(pos.active() && pos.pitch() < 1500 && pos.pitch() > PositionHold::toUs(-PositionHold::kMaxTiltDeg));  // brakes, no jump back
+    flowStep(0, 80, 100);                                       // below 10 cm: flow not trusted
+    assert(!pos.active() && pos.pitch() == 1500);
+    flowStep(0, 400, 10); assert(!pos.active());                // poor surface
+    // a pure tilt is removed: counts that match the attitude change do not move the estimate
+    PositionHold tilt;
+    tilt.command(0x19, 1500, 1500);
+    pt = 0; ps = 0;
+    tilt.update(true, true, 0, 0, 100, ++ps, 400, 0, 0, pt += 20);
+    tilt.update(true, true, 0, 0, 100, ++ps, 400, 0, 0, pt += 20);
+    int16_t tiltCounts = int16_t(PositionHold::kForwardSign * PositionHold::kCountsPerRad * 0.1745f);  // 10 degrees
+    tilt.update(true, true, tiltCounts, 0, 100, ++ps, 400, 0, 100, pt += 20);
+    assert(tilt.forwardCm() == 0);
+    tilt.resetOdometry();
+    assert(tilt.forwardCm() == 0 && tilt.rightCm() == 0 && !tilt.active());
+    assert(PositionHold::toUs(0) == 1500 && PositionHold::toUs(6) == 1533 && PositionHold::toUs(-6) == 1467);
 
     SerialArmGuard guard;
     assert(!guard.allows(1000, 0, 0) && guard.mustCut(0, 0));   // no RC frame yet

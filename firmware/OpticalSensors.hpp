@@ -17,6 +17,7 @@ int16_t flowX();      // flow counts accumulated since boot, wrapping
 int16_t flowY();
 uint8_t quality();    // PMW3901 SQUAL of the last burst
 uint8_t rangeSamples();  // counts range finder readings (valid or not), wrapping
+uint8_t flowSamples();   // counts flow bursts, wrapping
 
 // VL53L0X RESULT_RANGE_STATUS block (12 bytes from 0x14): the ST API treats only device status 11 as a valid
 // range (vl53l0x_api_core VL53L0X_get_pal_range_status); 8190/8191 mean nothing in range.

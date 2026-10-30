@@ -7,6 +7,8 @@ data class ControlPreview(
     val roll: Float = 0f,
     /** Set while the firmware height hold flies: the target height in cm replaces the throttle byte (AUX2 set). */
     val holdCm: Int? = null,
+    /** With [holdCm]: also ask the firmware to hold position while the roll/pitch stick is centred. */
+    val positionHold: Boolean = false,
 ) {
     /** Nothing that would spin the motors: required for ARM. */
     val idle get() = throttle == 0f && (holdCm ?: 0) == 0
@@ -23,7 +25,8 @@ data class ControlPreview(
      */
     fun rc(throttleLimit: Float, axisLimit: Float): Rc150 {
         fun axis(v: Float) = 125 + Math.round(v.coerceIn(-1f, 1f) * axisLimit.coerceIn(0f, 1f) * 99)
-        if (holdCm != null) return Rc150(axis(roll), axis(pitch), axis(yaw), holdCm.coerceIn(0, HeightTarget.MAX_CM), Rc150.AUX_HOLD)
+        if (holdCm != null) return Rc150(axis(roll), axis(pitch), axis(yaw), holdCm.coerceIn(0, HeightTarget.MAX_CM),
+            if (positionHold) Rc150.AUX_POSITION else Rc150.AUX_HOLD)
         val thr = Math.round(minOf(throttle.coerceIn(0f, 1f), throttleLimit.coerceIn(0f, 1f)) * 250)
         return Rc150(axis(roll), axis(pitch), axis(yaw), thr, Rc150.AUX_DEFAULT)
     }
