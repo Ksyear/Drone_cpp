@@ -30,6 +30,8 @@ class MspCodecTest {
         assertEquals(listOf(-3, -125, 30, 40, 168, -2, 1),
             listOf(status.estAlt, status.rollDeci, status.pitchDeci, status.altHold, status.vbatRaw, status.trimPitch, status.trimRoll))
         assertFalse(AirStatus.decode(frames.single())!!.copy(firmwareId = 100).controlFirmware)  // original firmware id
+        // the kit's config.h thresholds: 179/184/189 = 3.5/3.6/3.7 V
+        for ((raw, volts) in listOf(179 to 3.5f, 184 to 3.6f, 189 to 3.7f)) assertEquals(volts, status.copy(vbatRaw = raw).batteryVolts, 0.01f)
     }
 
     @Test fun rejectsCorruptErrorAndWrongLengthFrames() {

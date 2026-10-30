@@ -87,7 +87,8 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize(), color = Background) {
                     Row(Modifier.fillMaxSize().safeDrawingPadding().padding(10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         ThrottlePanel(preview.throttle, "${(preview.throttle * 100).toInt()}% · 상한 ${(ble.throttleLimit * 100).toInt()}%",
-                            Modifier.weight(0.3f).fillMaxHeight(), { preview = preview.throttleStep(it) }, { preview = preview.copy(yaw = it) })
+                            ble.throttleLimit < 0.3f, Modifier.weight(0.3f).fillMaxHeight(),
+                            { preview = preview.throttleStep(it) }, { preview = preview.copy(yaw = it) })
                         Column(Modifier.weight(0.4f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             StatusBar(ble, camera, mission != null) { showSettings = true }
                             CameraViewport(camera, ble, 1000 + 4 * preview.rc(ble.throttleLimit, ble.axisLimit).throttle,
@@ -251,6 +252,8 @@ private fun FlightView(ble: DroneBleClient, throttleUs: Int, onConnect: () -> Un
                 Readout("ROLL", t?.let { "%.1f°".format(it.rollDeci / 10f) } ?: "—", Modifier.weight(1f))
                 Readout("PITCH", t?.let { "%.1f°".format(it.pitchDeci / 10f) } ?: "—", Modifier.weight(1f))
                 Readout("수신", ble.telemetryAgeMs?.let { "$it ms" } ?: "—", Modifier.weight(1f))
+                Readout("배터리≈", t?.let { "%.2fV".format(it.batteryVolts) } ?: "—", Modifier.weight(1f),
+                    if ((t?.batteryVolts ?: 9f) < 3.5f) Amber else White)
             }
             Text(t?.let { "VBAT raw ${it.vbatRaw} · 트림 ${it.trimPitch}/${it.trimRoll} · FW ${it.firmwareId}" } ?: "",
                 color = Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
@@ -259,10 +262,10 @@ private fun FlightView(ble: DroneBleClient, throttleUs: Int, onConnect: () -> Un
 }
 
 @Composable
-private fun Readout(label: String, value: String, modifier: Modifier) {
+private fun Readout(label: String, value: String, modifier: Modifier, color: Color = White) {
     Column(modifier.border(1.dp, Outline, RoundedCornerShape(10.dp)).padding(vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label, color = Muted, fontSize = 10.sp)
-        Text(value, fontSize = 15.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, maxLines = 1)
+        Text(value, color = color, fontSize = 15.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, maxLines = 1)
     }
 }
 
@@ -298,21 +301,22 @@ private fun ActionBar(ble: DroneBleClient, onDisarm: () -> Unit, onStop: () -> U
 }
 
 /**
- * Throttle on ▲/▼ (tap = one step, hold = repeat; the level stays when released) and yaw on hold-to-turn buttons,
- * so raising the throttle can no longer leak a yaw command the way a combined throttle/yaw pad did.
+ * Throttle on ▲ climb / ▼ slow descent (tap = one step, hold = repeat, ▼ slower) and yaw on hold-to-turn buttons,
+ * so raising the throttle can no longer leak a yaw command the way a combined throttle/yaw pad did. Released, the
+ * output stays put; there is no altitude sensor, so this holds the throttle, not the height.
  */
 @Composable
-private fun ThrottlePanel(throttle: Float, value: String, modifier: Modifier, onStep: (Int) -> Unit, onYaw: (Float) -> Unit) {
+private fun ThrottlePanel(throttle: Float, value: String, testCap: Boolean, modifier: Modifier, onStep: (Int) -> Unit, onYaw: (Float) -> Unit) {
     Column(modifier.clip(RoundedCornerShape(20.dp)).background(Panel).border(1.dp, Outline, RoundedCornerShape(20.dp)).padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("THROTTLE", fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+            Text("THROTTLE · 떼면 유지", fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
             Text("YAW", color = Muted, fontSize = 11.sp, letterSpacing = 1.sp)
         }
         Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                HoldButton("▲", "스로틀 올리기", Modifier.weight(1f).fillMaxWidth(), { repeatWhileHeld { onStep(+1) } })
-                HoldButton("▼", "스로틀 내리기", Modifier.weight(1f).fillMaxWidth(), { repeatWhileHeld { onStep(-1) } })
+                HoldButton("▲ 상승", "스로틀 올리기", Modifier.weight(1f).fillMaxWidth(), { repeatWhileHeld(90) { onStep(+1) } })
+                HoldButton("▼ 천천히 하강", "스로틀 내리기", Modifier.weight(1f).fillMaxWidth(), { repeatWhileHeld(250) { onStep(-1) } })
             }
             Box(Modifier.width(18.dp).fillMaxHeight().clip(RoundedCornerShape(9.dp)).background(Color(0xff0B121A)),
                 contentAlignment = Alignment.BottomCenter) {
@@ -326,13 +330,15 @@ private fun ThrottlePanel(throttle: Float, value: String, modifier: Modifier, on
                 { onYaw(ControlPreview.YAW_BUTTON); awaitCancellation() }) { onYaw(0f) }
         }
         Text(value, color = Accent, fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.align(Alignment.CenterHorizontally))
+        if (testCap) Text("시험용 상한: 뜨지 않음 · 설정에서 올리기", color = Amber, fontSize = 10.sp,
+            modifier = Modifier.align(Alignment.CenterHorizontally))
     }
 }
 
-private suspend fun repeatWhileHeld(step: () -> Unit) {
+private suspend fun repeatWhileHeld(periodMs: Long, step: () -> Unit) {
     step()
     delay(350)
-    while (true) { step(); delay(90) }
+    while (true) { step(); delay(periodMs) }
 }
 
 /** Runs [whilePressed] from touch-down until the finger lifts or leaves the button, then [onRelease]. */

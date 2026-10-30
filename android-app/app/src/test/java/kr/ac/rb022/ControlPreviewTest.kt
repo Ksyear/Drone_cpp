@@ -16,7 +16,7 @@ class ControlPreviewTest {
         repeat(ControlPreview.THROTTLE_STEPS + 3) { state = state.throttleStep(+1) }
         assertEquals(1f, state.throttle)
         repeat(7) { state = state.throttleStep(-1) }
-        assertEquals(0.65f, state.throttle, 1e-6f)
+        assertEquals(0.825f, state.throttle, 1e-6f)
         repeat(ControlPreview.THROTTLE_STEPS) { state = state.throttleStep(-1) }
         assertEquals(0f, state.throttle)  // exact: canArm() compares with 0f
         assertEquals(0.05f, ControlPreview(throttle = 0.049f).throttleStep(0).throttle)  // slider values snap to a step

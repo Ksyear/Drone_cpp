@@ -76,6 +76,11 @@ data class AirStatus(val flightState: Int, val firmwareId: Int, val estAlt: Int,
                      val altHold: Int, val vbatRaw: Int, val trimPitch: Int, val trimRoll: Int) {
     val armed get() = flightState and 0x80 != 0
     val controlFirmware get() = firmwareId == Msp.CONTROL_FIRMWARE_ID
+    /**
+     * Estimate only: firmware vbat = 16*ADC/VBATSCALE(64) = ADC/4 against a 5 V reference, which matches the kit's
+     * own thresholds 179/184/189 = 3.5/3.6/3.7 V. Meaningless on USB power alone (pin floats near 35).
+     */
+    val batteryVolts get() = vbatRaw * 20f / 1023f
 
     companion object {
         fun decode(f: MspFrame): AirStatus? = if (f.command != Msp.AIR || f.error || f.payload.size != 14) null else

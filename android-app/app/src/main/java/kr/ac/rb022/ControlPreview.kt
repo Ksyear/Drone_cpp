@@ -25,7 +25,7 @@ data class ControlPreview(
     }
 
     companion object {
-        const val THROTTLE_STEPS = 20
+        const val THROTTLE_STEPS = 40
         /** Yaw while a rotate button is held, before the axis limit. */
         const val YAW_BUTTON = 0.5f
     }
