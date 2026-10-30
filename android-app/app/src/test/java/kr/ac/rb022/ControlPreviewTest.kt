@@ -5,12 +5,21 @@ import org.junit.Test
 
 class ControlPreviewTest {
     @Test fun sticksClampAndCannotEnableTransmission() {
-        val state = ControlPreview().left(4f, -4f).right(-4f, 4f)
-        assertEquals(1f, state.throttle)
-        assertEquals(1f, state.yaw)
+        val state = ControlPreview().right(-4f, 4f)
         assertEquals(-1f, state.pitch)
         assertEquals(-1f, state.roll)
         assertEquals(0f, ControlPreview().throttle)
+    }
+
+    @Test fun throttleButtonsStepWithinRangeAndReturnToExactZero() {
+        var state = ControlPreview()
+        repeat(ControlPreview.THROTTLE_STEPS + 3) { state = state.throttleStep(+1) }
+        assertEquals(1f, state.throttle)
+        repeat(7) { state = state.throttleStep(-1) }
+        assertEquals(0.65f, state.throttle, 1e-6f)
+        repeat(ControlPreview.THROTTLE_STEPS) { state = state.throttleStep(-1) }
+        assertEquals(0f, state.throttle)  // exact: canArm() compares with 0f
+        assertEquals(0.05f, ControlPreview(throttle = 0.049f).throttleStep(0).throttle)  // slider values snap to a step
     }
 
     @Test fun rcBytesStayInsideLegacyStickCommandDeadZone() {

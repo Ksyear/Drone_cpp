@@ -39,7 +39,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.net.Inet4Address
 
 private val Background = Color(0xff090E14)
@@ -84,10 +86,8 @@ class MainActivity : ComponentActivity() {
                 val connectDrone = { if (!ble.hasPermissions() || !ble.reconnect()) { showSettings = true; scan() } }
                 Surface(Modifier.fillMaxSize(), color = Background) {
                     Row(Modifier.fillMaxSize().safeDrawingPadding().padding(10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        StickPad("THROTTLE", "YAW", preview.yaw, 1f - 2f * preview.throttle,
-                            "${(preview.throttle * 100).toInt()}% · 상한 ${(ble.throttleLimit * 100).toInt()}%",
-                            Modifier.weight(0.3f).fillMaxHeight(), { x, y -> preview = preview.left(x, y) },
-                            { preview = preview.copy(yaw = 0f) })  // throttle holds its position; yaw springs back
+                        ThrottlePanel(preview.throttle, "${(preview.throttle * 100).toInt()}% · 상한 ${(ble.throttleLimit * 100).toInt()}%",
+                            Modifier.weight(0.3f).fillMaxHeight(), { preview = preview.throttleStep(it) }, { preview = preview.copy(yaw = it) })
                         Column(Modifier.weight(0.4f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             StatusBar(ble, camera, mission != null) { showSettings = true }
                             CameraViewport(camera, ble, 1000 + 4 * preview.rc(ble.throttleLimit, ble.axisLimit).throttle,
@@ -294,6 +294,64 @@ private fun ActionBar(ble: DroneBleClient, onDisarm: () -> Unit, onStop: () -> U
             colors = ButtonDefaults.buttonColors(containerColor = Coral, contentColor = Background)) {
             Text("STOP", fontWeight = FontWeight.Black, fontSize = 18.sp)
         }
+    }
+}
+
+/**
+ * Throttle on ▲/▼ (tap = one step, hold = repeat; the level stays when released) and yaw on hold-to-turn buttons,
+ * so raising the throttle can no longer leak a yaw command the way a combined throttle/yaw pad did.
+ */
+@Composable
+private fun ThrottlePanel(throttle: Float, value: String, modifier: Modifier, onStep: (Int) -> Unit, onYaw: (Float) -> Unit) {
+    Column(modifier.clip(RoundedCornerShape(20.dp)).background(Panel).border(1.dp, Outline, RoundedCornerShape(20.dp)).padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("THROTTLE", fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+            Text("YAW", color = Muted, fontSize = 11.sp, letterSpacing = 1.sp)
+        }
+        Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                HoldButton("▲", "스로틀 올리기", Modifier.weight(1f).fillMaxWidth(), { repeatWhileHeld { onStep(+1) } })
+                HoldButton("▼", "스로틀 내리기", Modifier.weight(1f).fillMaxWidth(), { repeatWhileHeld { onStep(-1) } })
+            }
+            Box(Modifier.width(18.dp).fillMaxHeight().clip(RoundedCornerShape(9.dp)).background(Color(0xff0B121A)),
+                contentAlignment = Alignment.BottomCenter) {
+                Box(Modifier.fillMaxWidth().fillMaxHeight(throttle).background(Accent))
+            }
+        }
+        Row(Modifier.fillMaxWidth().height(56.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            HoldButton("↺ 왼쪽", "왼쪽으로 회전", Modifier.weight(1f).fillMaxHeight(),
+                { onYaw(-ControlPreview.YAW_BUTTON); awaitCancellation() }) { onYaw(0f) }
+            HoldButton("오른쪽 ↻", "오른쪽으로 회전", Modifier.weight(1f).fillMaxHeight(),
+                { onYaw(ControlPreview.YAW_BUTTON); awaitCancellation() }) { onYaw(0f) }
+        }
+        Text(value, color = Accent, fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.align(Alignment.CenterHorizontally))
+    }
+}
+
+private suspend fun repeatWhileHeld(step: () -> Unit) {
+    step()
+    delay(350)
+    while (true) { step(); delay(90) }
+}
+
+/** Runs [whilePressed] from touch-down until the finger lifts or leaves the button, then [onRelease]. */
+@Composable
+private fun HoldButton(label: String, description: String, modifier: Modifier, whilePressed: suspend () -> Unit, onRelease: () -> Unit = {}) {
+    val press by rememberUpdatedState(whilePressed)
+    val release by rememberUpdatedState(onRelease)
+    val scope = rememberCoroutineScope()
+    var down by remember { mutableStateOf(false) }
+    Box(modifier.clip(RoundedCornerShape(14.dp)).background(if (down) Accent.copy(alpha = .22f) else Color(0xff0B121A))
+        .border(1.dp, if (down) Accent else Outline, RoundedCornerShape(14.dp))
+        .pointerInput(Unit) {
+            detectTapGestures(onPress = {
+                down = true
+                val job = scope.launch { press() }
+                try { tryAwaitRelease() } finally { job.cancel(); down = false; release() }
+            })
+        }.semantics { contentDescription = description }, contentAlignment = Alignment.Center) {
+        Text(label, color = White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
     }
 }
 

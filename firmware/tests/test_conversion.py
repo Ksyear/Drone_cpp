@@ -16,6 +16,7 @@ class ConversionTest(unittest.TestCase):
         result = build.convert(source)
         self.assertIn('evaluateCommand(dataSize[CURRENTPORT])', result)
         self.assertIn('if (!validControlPayload(cmdMSP[CURRENTPORT], payloadSize)) return;', result)
+        self.assertIn('if (f.ARMED && writesEeprom(cmdMSP[CURRENTPORT])) return;', result)
         self.assertIn('void setup() { FlightController::begin(); }', result)
         self.assertIn('#line 1 "AirCopter.ino"', result)
         self.assertIn('serialArmGuard.rcReceived(millis());', result)

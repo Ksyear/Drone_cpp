@@ -6,10 +6,9 @@ data class ControlPreview(
     val pitch: Float = 0f,
     val roll: Float = 0f,
 ) {
-    fun left(x: Float, y: Float) = copy(
-        yaw = x.coerceIn(-1f, 1f),
-        throttle = ((1f - y) / 2f).coerceIn(0f, 1f),
-    )
+    /** Throttle buttons: whole steps of 1/[THROTTLE_STEPS] of the cap, so the bottom step is exactly 0 (ARM check). */
+    fun throttleStep(direction: Int) =
+        copy(throttle = (Math.round(throttle * THROTTLE_STEPS) + direction).coerceIn(0, THROTTLE_STEPS) / THROTTLE_STEPS.toFloat())
     fun right(x: Float, y: Float) = copy(
         roll = x.coerceIn(-1f, 1f),
         pitch = (-y).coerceIn(-1f, 1f),
@@ -23,5 +22,11 @@ data class ControlPreview(
         fun axis(v: Float) = 125 + Math.round(v.coerceIn(-1f, 1f) * axisLimit.coerceIn(0f, 1f) * 99)
         val thr = Math.round(throttle.coerceIn(0f, 1f) * throttleLimit.coerceIn(0f, 1f) * 250)
         return Rc150(axis(roll), axis(pitch), axis(yaw), thr, Rc150.AUX_DEFAULT)
+    }
+
+    companion object {
+        const val THROTTLE_STEPS = 20
+        /** Yaw while a rotate button is held, before the axis limit. */
+        const val YAW_BUTTON = 0.5f
     }
 }

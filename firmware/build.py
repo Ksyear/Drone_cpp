@@ -14,7 +14,8 @@ def convert(source: str) -> str:
     replacements = {
         "void evaluateCommand();": "void evaluateCommand(uint8_t payloadSize);",
         "evaluateCommand();  // we got a valid packet": "evaluateCommand(dataSize[CURRENTPORT]);  // we got a valid packet",
-        "void evaluateCommand() {": "void evaluateCommand(uint8_t payloadSize) {\n  if (!validControlPayload(cmdMSP[CURRENTPORT], payloadSize)) return;",
+        "void evaluateCommand() {": "void evaluateCommand(uint8_t payloadSize) {\n  if (!validControlPayload(cmdMSP[CURRENTPORT], payloadSize)) return;\n"
+                                    "  if (f.ARMED && writesEeprom(cmdMSP[CURRENTPORT])) return;",
         "   case MSP_SET_RAW_RC_SERIAL:\n": "   case MSP_SET_RAW_RC_SERIAL:\n     serialArmGuard.rcReceived(millis());\n",
         "   case MSP_ARM:\n     go_arm();":
             "   case MSP_ARM:\n     if (serialArmGuard.allows(serialRcValue[THROTTLE], millis(), i2c_errors_count)) go_arm();",

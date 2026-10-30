@@ -16,6 +16,8 @@ int main() {
         assert(validControlPayload(152, size) == (size == 0));
     }
     assert(validControlPayload(108, 0));
+    for (int command = 0; command <= 255; ++command)
+        assert(writesEeprom(command) == ((command >= 153 && command <= 160) || command == 250));
     FlightController::begin();
     FlightController::update();
     FlightController::update();
